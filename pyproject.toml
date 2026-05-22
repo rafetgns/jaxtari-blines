@@ -9,15 +9,16 @@ dependencies = [
     "rtpt>=0.0.4",
     "wandb[media]>=0.27.0",
     "hydra-core>=1.3.2",
+    "jax[cuda12]" # use "jax" if no cuda available
 ]
 
 [tool.uv]
 override-dependencies = [
-    # jax for intel macos
-    "jax==0.4.38; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "jaxlib==0.4.38; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    # uncomment if you are on macos with intel cpu
+    #"jax==0.4.38; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    #"jaxlib==0.4.38; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     # wandb[media] dependencies for intel macos
-    "rdkit==2025.9.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
-    "flax==0.10.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    #"rdkit==2025.9.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    #"flax==0.10.0; sys_platform == 'darwin' and platform_machine == 'x86_64'",
 ]
 
