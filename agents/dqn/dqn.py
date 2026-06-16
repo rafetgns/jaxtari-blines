@@ -296,7 +296,7 @@ def single_run(config: dict):
         )
 
     def step_once(carry, unused_step):
-        state, buffer, env_state, obs, rng, global_step, ep_stats = carry
+        state, buffer_state, env_state, obs, rng, global_step, ep_stats = carry
 
         rng, action_rng, explore_rng = jax.random.split(rng, 3)
         epsilon = jnp.interp(
@@ -316,13 +316,13 @@ def single_run(config: dict):
 
         transition = {
             "obs": obs.astype(obs_dtype),
-            "action": actions,
-            "reward": rewards,
-            "done": next_done,
+            "action": actions.astype(jnp.int32),
+            "reward": rewards.astype(jnp.float32),
+            "done": next_done.astype(jnp.bool_),
             "next_obs": next_obs.astype(obs_dtype),
         }
         buffer_state = replay_buffer.add(buffer_state, transition)
-        
+
         new_returns = ep_stats.episode_returns + rewards
         new_lengths = ep_stats.episode_lengths + 1
 
@@ -333,17 +333,21 @@ def single_run(config: dict):
             returned_episode_lengths=jnp.where(next_done, new_lengths, ep_stats.returned_episode_lengths),
         )
 
-
         updates_per_step = max(1, config["NUM_ENVS"] // config.get("TRAIN_FREQUENCY", 4))
 
         def do_update(update_carry, _):
             u_state, u_key = update_carry
             u_key, sample_key = jax.random.split(u_key)
 
-            b_obs, b_act, b_rew, b_don, b_nobs = buffer.sample(sample_key, config.get("BATCH_SIZE", 32))
+            batch = replay_buffer.sample(buffer_state, sample_key).experience
+            b_obs = batch["obs"]
+            b_act = batch["action"]
+            b_rew = batch["reward"]
+            b_don = batch["done"]
+            b_nobs = batch["next_obs"]
 
             def q_loss_fn(params):
-                q_pred = u_state.apply_fn(params, b_obs) 
+                q_pred = u_state.apply_fn(params, b_obs)
                 q_pred = q_pred[jnp.arange(config.get("BATCH_SIZE", 32)), b_act.reshape(-1)]
 
                 q_next = u_state.apply_fn(u_state.target_params, b_nobs)
@@ -369,7 +373,6 @@ def single_run(config: dict):
             (new_s_state, new_s_key), losses = jax.lax.scan(do_update, (s_state, s_key), None, length=updates_per_step)
             return new_s_state, new_s_key, jnp.mean(losses)
 
-
         should_train_step = (global_step % config.get("TRAIN_FREQUENCY", 4)) < config["NUM_ENVS"]
         can_train = jnp.logical_and(replay_buffer.can_sample(buffer_state), should_train_step)
 
@@ -379,7 +382,6 @@ def single_run(config: dict):
             lambda c: (c[0], c[1], 0.0),
             (state, rng)
         )
-
 
         update_target_flag = jnp.logical_and(
             can_train,
@@ -395,7 +397,7 @@ def single_run(config: dict):
         state = state.replace(target_params=new_target_params)
 
         global_step += config["NUM_ENVS"]
-        return (state, buffer, next_env_state, next_obs, rng, global_step, ep_stats), (avg_loss, epsilon)
+        return (state, buffer_state, next_env_state, next_obs, rng, global_step, ep_stats), (avg_loss, epsilon)
 
 
 
