@@ -25,7 +25,6 @@ from jaxatari.wrappers import (
     FlattenObservationWrapper
 )
 from jaxatari import spaces
-from agents.dqn.dqn_eval import evaluate
 
 
 def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False):

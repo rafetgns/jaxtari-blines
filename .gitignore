@@ -13,3 +13,4 @@ wheels/
 models/
 outputs/
 wandb/
+.DS_Store
