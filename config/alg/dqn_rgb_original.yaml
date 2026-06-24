@@ -3,6 +3,7 @@ EXP_NAME: dqn
 
 PIXEL_BASED: True
 NATIVE_DOWNSCALING: True
+CNN_ARCH: nature       # options = nature, impala
 
 TOTAL_TIMESTEPS: 10000000
 BUFFER_SIZE: 1000000

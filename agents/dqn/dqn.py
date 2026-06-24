@@ -30,21 +30,16 @@ from jaxatari import spaces
 def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False):
     def thunk():
 
-
         active_mods = mods
         if not eval and isinstance(active_mods, (list, tuple)) and len(active_mods) > 1:
             active_mods = []                                                             
 
-
-       
         if isinstance(active_mods, (list, tuple)) and len(active_mods) == 0:
             mods_arg = None
         else:
             mods_arg = active_mods
 
         env = jaxatari.make(env_id, mods=mods_arg)
-
-
 
         env = AtariWrapper(
             env,
@@ -83,6 +78,31 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
     return thunk
 
 
+class ResidualBlock(nn.Module):
+    channels: int
+
+    @nn.compact
+    def __call__(self, x):
+        inputs = x
+        x = nn.relu(x)
+        x = nn.Conv(self.channels, kernel_size=(3, 3))(x)
+        x = nn.relu(x)
+        x = nn.Conv(self.channels, kernel_size=(3, 3))(x)
+        return x + inputs
+
+
+class ConvSequence(nn.Module):
+    channels: int
+
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Conv(self.channels, kernel_size=(3, 3))(x)
+        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding="SAME")
+        x = ResidualBlock(self.channels)(x)
+        x = ResidualBlock(self.channels)(x)
+        return x
+    
+
 class QNetwork(nn.Module):
     action_dim: int
 
@@ -100,8 +120,25 @@ class QNetwork(nn.Module):
         x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512)(x)
         x = nn.relu(x)
-        x = nn.Dense(self.action_dim)(x)
-        return x
+        return nn.Dense(self.action_dim)(x)
+
+
+class ImpalaQNetwork(nn.Module):
+    action_dim: int
+    channelss: tuple = (16, 32, 32)
+
+    @nn.compact
+    def __call__(self, x):
+        x = jnp.transpose(x, (0, 2, 3, 1))
+        x = x.astype(jnp.float32)
+        x = x / 255.0
+        for channels in self.channelss:
+            x = ConvSequence(channels)(x)
+        x = nn.relu(x)
+        x = x.reshape((x.shape[0], -1))
+        x = nn.Dense(256)(x)
+        x = nn.relu(x)
+        return nn.Dense(self.action_dim)(x)
 
 
 class MLP_QNetwork(nn.Module):
@@ -131,7 +168,6 @@ class EpisodeStatistics:
 
 def build_eval_fn(env, apply_fn, eval_episodes, max_steps, action_dim):
    
-
     def wrapped_reset(key):
         next_obs, state = env.reset(key)
         return next_obs.squeeze()[None, ...], state
@@ -178,6 +214,7 @@ def build_eval_fn(env, apply_fn, eval_episodes, max_steps, action_dim):
 
 
 def single_run(config: dict):
+    
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
 
     if isinstance(config.get("TRAIN_MODS"), list):
@@ -221,16 +258,20 @@ def single_run(config: dict):
         obs, state = jax.vmap(env.reset)(rng)
         return obs.reshape(rng.shape[0], *obs_shape), state
    
-
     @jax.jit
     def vmap_step(state, action):
         next_obs, state, reward, terminated, truncated, info = jax.vmap(env.step)(state, action)
         next_done = jnp.logical_or(terminated, truncated)
         return next_obs.reshape(action.shape[0], *obs_shape), state, reward, next_done, info
 
-    
     key, q_key = jax.random.split(key, 2) 
-    network = QNetwork(action_dim=action_dim) if config.get("PIXEL_BASED", True) else MLP_QNetwork(action_dim=action_dim)
+
+    if not config.get("PIXEL_BASED", True):
+        network = MLP_QNetwork(action_dim=action_dim)
+    elif config.get("CNN_ARCH", "nature").lower() == "impala":
+        network = ImpalaQNetwork(action_dim=action_dim)
+    else:
+        network = QNetwork(action_dim=action_dim)
 
     dummy_obs = jnp.zeros((1, *obs_shape)) 
     q_params = network.init(q_key, dummy_obs)
@@ -295,6 +336,7 @@ def single_run(config: dict):
         )
 
     def step_once(carry, unused_step):
+        
         state, buffer_state, env_state, obs, rng, global_step, ep_stats = carry
 
         rng, action_rng, explore_rng = jax.random.split(rng, 3)
@@ -399,14 +441,13 @@ def single_run(config: dict):
         return (state, buffer_state, next_env_state, next_obs, rng, global_step, ep_stats), (avg_loss, epsilon)
 
 
-
     def save_and_eval(step_count, agent_state):
+        
         model_path = ""
         if config.get("SAVE_PATH", "./models") is not None:
 
             model_path = f'{config.get("SAVE_PATH", "./models")}/{run_name}/{config["EXP_NAME"]}_{step_count}_{int(time.time())}.cleanrl_model'
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
-
 
             with open(model_path, "wb") as f:
                 f.write(
@@ -451,13 +492,11 @@ def single_run(config: dict):
 
         return metrics
 
-
     CHUNK_SIZE = config["NUM_STEPS"] // config["NUM_ENVS"]
 
     @partial(jax.jit, donate_argnums=(0,))
     def rollout_chunk(carry):
         return jax.lax.scan(step_once, carry, None, length=CHUNK_SIZE)
-
 
     key, reset_key = jax.random.split(key)
     obs, env_state = vmap_reset(jax.random.split(reset_key, config["NUM_ENVS"]))
