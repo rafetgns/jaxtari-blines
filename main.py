@@ -18,7 +18,10 @@ def main(config):
             run_fn = single_run
         elif merged_config["ALG"] == "RAINBOW":  
             from agents.rainbow.rainbow import single_run  
-            run_fn = single_run   
+            run_fn = single_run 
+        elif merged_config["ALG"] == "DQN_PROGRESS":
+            from agents.dqn_progress.dqn import single_run
+            run_fn = single_run 
            
         print(f"Running seed {seed} ...")
         merged_config["SEED"] = seed
