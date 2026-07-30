@@ -9,6 +9,7 @@ def main(config):
     n_seeds = merged_config.get("NUM_SEEDS", 1)
 
     all_metrics = []
+    starting_seed = merged_config.get("SEED", 0)
     for seed in range(n_seeds):
         if merged_config["ALG"] == "PPO":
             from agents.ppo.ppo import single_run
@@ -26,7 +27,7 @@ def main(config):
         metrics["ALG"] = merged_config["ALG"]
         metrics["ENV_ID"] = merged_config["ENV_ID"]
         metrics["PIXEL_BASED"] = merged_config.get("PIXEL_BASED", False)
-        metrics["SEED"] = seed
+        metrics["SEED"] = used_seed
         all_metrics.append(metrics)
 
     print("Metrics: ", all_metrics)
