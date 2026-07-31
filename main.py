@@ -9,6 +9,7 @@ def main(config):
     n_seeds = merged_config.get("NUM_SEEDS", 1)
 
     all_metrics = []
+    starting_seed = merged_config.get("SEED", 0)
     for seed in range(n_seeds):
         if merged_config["ALG"] == "PPO":
             from agents.ppo.ppo import single_run
@@ -19,14 +20,21 @@ def main(config):
         elif merged_config["ALG"] == "C51":
             from agents.c51.c51 import single_run
             run_fn = single_run
-        
+        elif merged_config["ALG"] == "RAINBOW":  
+            from agents.rainbow.rainbow import single_run  
+            run_fn = single_run       
         print(f"Running seed {seed} ...")
         merged_config["SEED"] = seed
+
+
+        used_seed = starting_seed + seed
+        print(f"Running seed {used_seed} ...")
+        merged_config["SEED"] = used_seed
         metrics = run_fn(merged_config)
         metrics["ALG"] = merged_config["ALG"]
         metrics["ENV_ID"] = merged_config["ENV_ID"]
         metrics["PIXEL_BASED"] = merged_config.get("PIXEL_BASED", False)
-        metrics["SEED"] = seed
+        metrics["SEED"] = used_seed
         all_metrics.append(metrics)
 
     print("Metrics: ", all_metrics)

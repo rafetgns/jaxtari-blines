@@ -28,26 +28,32 @@ from queue import Queue
 # ═══════════════════════════════════════════════════════════════════════════════
 
 ENVS: list[str] = [
-    "freeway", 
-    "kangaroo",
-    "montezumarevenge",
-    "mspacman",
-    "phoenix", "pong", "qbert",
-    "seaquest", "skiing",
-    "tennis",
-    "venture",
-    "timepilot", "asteroids", "breakout", 
-    "frostbite", "gravitar",
-    "bankheist",
-    "beamrider",
-    "enduro", 
+    # "freeway", 
+    # "kangaroo",
+    # "montezumarevenge",
+    # "mspacman",
+    # "phoenix", "pong", "qbert",
+    # "seaquest", "skiing",
+    # "tennis",
+    # "venture",
+    # "timepilot", "asteroids", "breakout", 
+    # "frostbite", "gravitar",
+    # "bankheist",
+    # "beamrider",
+    # "enduro", 
+
+    # Default DQN / Rainbow test
+    "frostbite", "mspacman", "phoenix", "pong" 
 ]
 
 CONFIGS: list[str] = [
-    "dqn_oc_tuned",
-    "dqn_rgb_tuned",
+    # "dqn_rgb_tuned",
+    # "dqn_oc_tuned",
+    # "rainbow_rgb_tuned",
+    # "rainbow_oc_tuned",
     # "dqn_oc_original",
-    # "dqn_rgb_original",
+    "dqn_rgb_original",
+    "rainbow_rgb_original",
 ]
 
 # ═══════════════════════════════════════════════════════════════════════════════

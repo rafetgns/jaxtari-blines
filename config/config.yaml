@@ -1,7 +1,7 @@
 # experiment params
 NAME_INITIALS: "RE"
 NUM_SEEDS: 3
-SEED: 0
+SEED: 1
 
 # wandb params
 WANDB_MODE: "online"  # set to online to activate wandb
