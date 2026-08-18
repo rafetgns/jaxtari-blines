@@ -115,40 +115,6 @@ class TimeStep:
     reward: jnp.array
     done: jnp.array
 
-def build_eval_return_fn(env, apply_fn, max_steps):
-
-    def wrapped_reset(key):
-        obs, state = env.reset(key)
-        return obs.squeeze()[None, ...], state
-
-    def wrapped_step(state, action):
-        obs, state, reward, terminated, truncated, info = env.step(state, action.squeeze())
-        done = jnp.logical_or(terminated, truncated)
-        return obs.squeeze()[None, ...], state, reward, done
-
-    def get_action(params, obs):
-        q_values = apply_fn(params, obs)
-        return jnp.argmax(q_values, axis=1)
-
-    def step_fn(carry, _):
-        obs, state, params = carry
-        actions = jax.vmap(get_action, in_axes=(None, 0))(params, obs)
-        obs, state, reward, done = jax.vmap(wrapped_step)(state, actions)
-        return (obs, state, params), (done, reward)
-
-    def eval_return_fn(params, reset_keys):
-        obs, state = jax.vmap(wrapped_reset)(reset_keys)
-        _, (dones, rewards) = jax.lax.scan(
-            step_fn, (obs, state, params), None, length=max_steps
-        )
-        has_finished = jax.lax.cummax(dones.astype(jnp.int32), axis=0)
-        mask = jnp.pad(has_finished[:-1, :], ((1, 0), (0, 0)), constant_values=0)
-        masked = rewards * (1 - mask)
-        return jnp.mean(jnp.sum(masked, axis=0))
-
-    return eval_return_fn
-
-
 def single_run(config: dict):
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
 
@@ -221,7 +187,7 @@ def single_run(config: dict):
         tx=tx,
     )
 
-    replay_buffer = fbx.make_flat_buffer(
+    replay_buffer = fbx.make_prioritised_flat_buffer(
         max_length=config.get("BUFFER_SIZE", 1000000),
         min_length=config.get("LEARNING_STARTS", 80000),
         sample_batch_size=config.get("BATCH_SIZE", 32),
@@ -270,6 +236,7 @@ def single_run(config: dict):
                 reward=rewards,
                 done=next_done,
             )
+            #TODO: Could move adding outside of scan (and use sequential add from fbx)
             buffer_state = replay_buffer.add(buffer_state, timestep)
             return (agent_state, buffer_state, next_env_state, next_obs, global_step + num_envs, rng), info
 

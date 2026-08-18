@@ -7,9 +7,9 @@ NATIVE_DOWNSCALING: True
 TOTAL_TIMESTEPS: 10000000
 BUFFER_SIZE: 100000 # reduced by 0.1x to scale up n_envs (might even work with 1M)
 LEARNING_STARTS: 80000 # scales automatically with n_envs, no need to adapt
-TARGET_NETWORK_FREQUENCY: 1000 # scales automatically
+TARGET_NETWORK_FREQUENCY: 10000 
 SCAN_STEPS: 1000
-GRADIENT_STEPS: -1 # -1 == n_envs * train_freq (== collected_steps)
+GRADIENT_STEPS: 1 # -1 == n_envs * train_freq (== collected_steps)
 
 NUM_ENVS: 32
 LEARNING_RATE: 1e-4
