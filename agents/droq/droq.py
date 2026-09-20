@@ -1,3 +1,4 @@
+# Adapted from https://github.com/TakuyaHiraoka/Dropout-Q-Functions-for-Doubly-Efficient-Reinforcement-Learning
 import os
 import random
 import time
