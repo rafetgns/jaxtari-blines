@@ -26,6 +26,9 @@ def main(config):
         elif merged_config["ALG"] == "APQN":
             from agents.apqn.apqn import single_run
             run_fn = single_run
+        elif merged_config["ALG"] == "C51":
+            from agents.c51.c51 import single_run
+            run_fn = single_run
         print(f"Running seed {seed} ...")
         merged_config["SEED"] = seed
 
