@@ -24,7 +24,7 @@ from jaxatari.wrappers import (
     FlattenObservationWrapper,
     LogWrapper
 )
-from agents.pqn_ada.pqn_ada_eval import evaluate
+from agents.apqn.apqn_eval import evaluate
 from rtpt import RTPT
 
 
