@@ -1,0 +1,23 @@
+ALG: SAC
+EXP_NAME: sac
+
+PIXEL_BASED: True
+NATIVE_DOWNSCALING: True
+
+LEARNING_RATE: 0.0003
+GAMMA: 0.99
+TAU: 1.0
+BATCH_SIZE: 64 # increasing it breaks the learning, making it tank the average return to 20. 64 seems to be the best value.
+BUFFER_SIZE: 50000
+LEARNING_STARTS: 20000
+TRAIN_FREQUENCY: 4
+GRADIENT_STEPS: 16 #-1 is too unstable, giving the same value as num_envs seems to be stable
+TARGET_UPDATE_FREQUENCY: 8000
+
+AUTOTUNE: True
+TARGET_ENTROPY_SCALE: 0.89
+ALPHA: 0.2
+
+SCAN_STEPS: 1000
+NUM_ENVS: 16 #incerasing it speeds up the learning. 16 worked best.
+TOTAL_TIMESTEPS: 10000000
