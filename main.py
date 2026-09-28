@@ -24,6 +24,8 @@ def main(config):
             from agents.rainbow.rainbow import single_run
         elif alg == "C51":
             from agents.c51.c51 import single_run
+        elif alg == "SCOBOTS":
+            from agents.scobots.scobots import single_run
         elif alg == "APQN":
             from agents.apqn.apqn import single_run
         elif alg == "DROQ":
