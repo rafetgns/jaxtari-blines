@@ -67,41 +67,64 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
     return thunk
 
 
-class Network(nn.Module):
+class ImpalaResidualBlock(nn.Module):
+    channels: int
+
     @nn.compact
     def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x / (255.0)
-        x = nn.Conv(
-            32,
-            kernel_size=(8, 8),
-            strides=(4, 4),
-            padding="VALID",
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
+        inputs = x
         x = nn.relu(x)
-        x = nn.Conv(
-            64,
-            kernel_size=(4, 4),
-            strides=(2, 2),
-            padding="VALID",
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
+        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
         x = nn.relu(x)
-        x = nn.Conv(
-            64,
-            kernel_size=(3, 3),
-            strides=(1, 1),
-            padding="VALID",
-            kernel_init=orthogonal(np.sqrt(2)),
-            bias_init=constant(0.0),
-        )(x)
+        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
+        return x + inputs
+
+
+class ImpalaConvSequence(nn.Module):
+    channels: int
+
+    @nn.compact
+    def __call__(self, x):
+        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
+        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding="SAME")
+        x = ImpalaResidualBlock(self.channels)(x)
+        x = ImpalaResidualBlock(self.channels)(x)
+        return x
+
+
+class ImpalaCNN(nn.Module):
+    channels: tuple = (16, 32, 32)
+
+    @nn.compact
+    def __call__(self, x):
+        x = jnp.transpose(x, (0, 2, 3, 1))       
+        x = x.astype(jnp.float32) / 255.0
+        for ch in self.channels:
+            x = ImpalaConvSequence(ch)(x)
         x = nn.relu(x)
         x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+        x = nn.Dense(256)(x)
         x = nn.relu(x)
+        return x
+    
+
+class Network(nn.Module):
+    cnn_type: str = "nature"
+
+    @nn.compact
+    def __call__(self, x):
+        if self.cnn_type == "impala":
+            return ImpalaCNN()(x)
+        x = jnp.transpose(x, (0, 2, 3, 1))
+        x = x / 255.0
+        x = nn.relu(nn.Conv(32, (8, 8), (4, 4), padding="VALID",
+                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
+        x = nn.relu(nn.Conv(64, (4, 4), (2, 2), padding="VALID",
+                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
+        x = nn.relu(nn.Conv(64, (3, 3), (1, 1), padding="VALID",
+                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
+        x = x.reshape((x.shape[0], -1))
+        x = nn.relu(nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
         return x
 
 class MLP_Network(nn.Module):
@@ -207,7 +230,7 @@ def single_run(config: dict):
         frac = 1.0 - (count // (num_minibatches * update_epochs)) / num_updates
         return config["LEARNING_RATE"] * frac
 
-    network = Network() if pixel_based else MLP_Network()
+    network = Network(cnn_type=config.get("CNN_TYPE", "nature")) if pixel_based else MLP_Network()
     actor = Actor(action_dim=action_dim)
     critic = Critic()
 
@@ -387,7 +410,7 @@ def single_run(config: dict):
                 ),
                 env_id,
                 eval_episodes=10,
-                Model=(Network, Actor) if pixel_based else (MLP_Network, Actor),
+                Model=(partial(Network, cnn_type=config.get("CNN_TYPE", "nature")), Actor) if pixel_based else (MLP_Network, Actor),
                 seed=config["SEED"] + 42,  # use a different seed for evaluation
             )
             metrics[mod_label] = float(np.mean(jax.device_get(episodic_returns)))
