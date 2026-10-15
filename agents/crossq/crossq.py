@@ -2,19 +2,19 @@ import os
 import random
 import time
 from functools import partial
+
 import flax
 import flax.linen as nn
-from flax.linen.initializers import zeros, ones
 import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
 import flashbax as fbx
 import wandb
-from flax.linen.initializers import constant, orthogonal
+from flax.linen.initializers import constant, ones, zeros
 from flax.training.train_state import TrainState
-import jaxatari
-from jaxatari.wrappers import (
+import jaxtari
+from jaxtari.wrappers import (
     NormalizeObservationWrapper,
     ObjectCentricWrapper,
     PixelObsWrapper,
@@ -23,6 +23,7 @@ from jaxatari.wrappers import (
     LogWrapper
 )
 from agents.crossq.crossq_eval import evaluate
+from agents.run_utils import eval_mod_configs, plan_chunks
 from rtpt import RTPT
 
 # CrossQ for Atari performs poorly, it either doesn't converge or converge worse than SAC.
@@ -35,7 +36,7 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
         print(f"[WARNING] Training on mods {mods}!")
 
     def thunk():
-        env = jaxatari.make(env_id, mods=mods)
+        env = jaxtari.make(env_id, mods=mods)
         env = AtariWrapper(
             env,
             sticky_actions=0.0,
@@ -412,9 +413,11 @@ def single_run(config: dict):
         config=config,
         name=run_name,
         save_code=True,
+        mode=config.get("WANDB_MODE", "online"),
     )
     wandb.define_metric("*", step_metric="charts/global_step")
 
+    # do not modify the seeding
     random.seed(config["SEED"])
     np.random.seed(config["SEED"])
     key = jax.random.PRNGKey(config["SEED"])
@@ -458,6 +461,13 @@ def single_run(config: dict):
     tau = config.get("TAU", 1.0)
     steps_per_update = config.get("TRAIN_FREQUENCY", 4) * config.get("NUM_ENVS", 1)
 
+    # same budget rule for every agent: whole jitted chunks within TOTAL_TIMESTEPS
+    scan_steps, num_chunks, steps_per_chunk = plan_chunks(
+        config["TOTAL_TIMESTEPS"],
+        steps_per_update,
+        config.get("SCAN_STEPS", 1000),
+    )
+
     TwinCritic = nn.vmap(
         Pixel_Critic if config.get("PIXEL_BASED", True) else MLP_Critic,
         variable_axes={"params": 0, "batch_stats": 0},
@@ -467,7 +477,9 @@ def single_run(config: dict):
         axis_size=2
     )
 
-    key, carry_key, actor_key, actor_key2, qf_key = jax.random.split(key, 5)
+    # same root split as dqn/c51/pqn, so env resets for a given seed match across agents
+    key, init_key = jax.random.split(key, 2)
+    actor_key, actor_key2, qf_key = jax.random.split(init_key, 3)
 
     if config.get("PIXEL_BASED", True):
         actor_net = Pixel_Actor_Discrete(action_dim=action_dim, configs=config)
@@ -495,7 +507,8 @@ def single_run(config: dict):
         batch_stats=critic_variables["batch_stats"],
         tx=optax.adam(learning_rate=config.get("LEARNING_RATE", 3e-4), eps=1e-4, b1=0.5),
     )
-    qf_target = {"params": critic_variables["params"], "batch_stats": critic_variables["batch_stats"]}
+    # copy so the target does not alias qf_state's buffers (the carry is donated)
+    qf_target = jax.tree.map(jnp.copy, {"params": critic_variables["params"], "batch_stats": critic_variables["batch_stats"]})
 
     replay_buffer = fbx.make_prioritised_flat_buffer(
         max_length=config.get("BUFFER_SIZE", int(1e6)),
@@ -674,37 +687,21 @@ def single_run(config: dict):
 
         return (actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, next_env_state, next_obs, rng, global_step), (infos, qf_loss, actor_loss, qf1_val, alpha)
 
-    def save_and_eval(step_count):
-        if config.get("SAVE_PATH", "./models") is not None:
-            model_path = f'{config.get("SAVE_PATH", "./models")}/{run_name}/{config["EXP_NAME"]}_{step_count}_{int(time.time())}.cleanrl_model'
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    def save_and_eval(actor_vars, step_count):
+        # the actor uses BatchRenorm: inference needs its params and running statistics (batch_stats)
+        if config.get("SAVE_PATH") is not None:
+            save_dir = os.path.join(config["SAVE_PATH"], run_name)
+            os.makedirs(save_dir, exist_ok=True)
+            model_path = os.path.join(save_dir, f'{config["EXP_NAME"]}_{step_count}_{int(time.time())}.cleanrl_model')
             with open(model_path, "wb") as f:
-                f.write(
-                    flax.serialization.to_bytes(
-                        [
-                            config,
-                            crossq_carry[0],
-                            crossq_carry[1]
-                         ]
-                    )
-                )
+                f.write(flax.serialization.to_bytes([config, actor_vars]))
             print(f"model saved to {model_path}")
 
         print(f"running evaluation at step {step_count}...")
-
-        eval_mods = config["EVAL_MODS"] if len(config["EVAL_MODS"]) > 0 else config["TRAIN_MODS"]
-        eval_configs = [([], "default")]
-        if len(eval_mods) > 0:
-            mods_list = list(eval_mods)
-            for mod in mods_list:
-                mods_config = [mod] if not isinstance(mod, (list, tuple)) else list(mod)
-                mod_label = mod if isinstance(mod, str) else "_".join(str(m) for m in mods_config)
-                eval_configs.append((mods_config, mod_label))
-
         metrics = {}
-        for mods_cfg, mod_label in eval_configs:
+        for mods_cfg, mod_label in eval_mod_configs(config):
             episodic_returns, env_states = evaluate(
-                model_path,
+                actor_vars,
                 partial(
                     make_env,
                     mods=mods_cfg,
@@ -714,72 +711,71 @@ def single_run(config: dict):
                 ),
                 config["ENV_ID"],
                 eval_episodes=10,
-                Model=(Pixel_Actor_Discrete, Pixel_Critic) if config["PIXEL_BASED"] else (MLP_Actor_Discrete, MLP_Critic),
-                seed=config["SEED"]+42,
-                configs=config
+                Model=partial(Pixel_Actor_Discrete if config["PIXEL_BASED"] else MLP_Actor_Discrete, configs=config),
+                seed=config["SEED"] + 42,  # use a different seed for evaluation
             )
-            metrics[mod_label] = np.mean(jax.device_get(episodic_returns))
-            wandb.log({f"eval/episodic_return_{mod_label}": np.mean(jax.device_get(episodic_returns))}, step=step_count)
+            metrics[mod_label] = float(np.mean(jax.device_get(episodic_returns)))
+            wandb.log({f"eval/episodic_return_{mod_label}": metrics[mod_label]}, step=step_count)
 
-            if config["CAPTURE_VIDEO"]:
-                clean_renderer = jaxatari.make(config["ENV_ID"], mods=mods_cfg).renderer
-                frames = jax.vmap(clean_renderer.render)(env_states)
-                frames = jnp.transpose(frames, (0, 3, 1, 2))
+            if config.get("CAPTURE_VIDEO", False):
+                # Instantiate a clean renderer immune to the training env's downscaling
+                clean_renderer = jaxtari.make(config["ENV_ID"], mods=mods_cfg).renderer
+                frames = jnp.transpose(jax.vmap(clean_renderer.render)(env_states), (0, 3, 1, 2))
                 video = wandb.Video(np.array(frames), fps=30, format="mp4")
                 wandb.log({f"eval/video_{mod_label}": video}, step=step_count)
                 print(f"Video (eval) logged to wandb with {frames.shape[0]} frames ({mod_label}).")
         return metrics
 
-    print(f"[crossq] start compile...")
-    start_compile = time.perf_counter()
+    def actor_variables_of(carry):
+        return {"params": carry[0].params, "batch_stats": carry[0].batch_stats}
+
+    print("[crossq] start compile...")
+    compile_start = time.perf_counter()
     global_step = jnp.array(0, dtype=jnp.int32)
     n_updates = jnp.array(0, dtype=jnp.int32)
     last_actor_loss = jnp.array(0.0)
-    crossq_carry = (actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, _state, _obs, carry_key, global_step)
+    carry = (actor_state, qf_state, qf_target, log_alpha, a_opt_state, n_updates, last_actor_loss, buffer_state, _state, _obs, key, global_step)
 
-    @jax.jit
-    def scanned_steps(carry):
-        def step_fn(c, _):
-            return full_CrossQ_step(*c)
-        return jax.lax.scan(step_fn, carry, None, length=config.get("SCAN_STEPS", 1000))
+    def train_chunk(carry):
+        return jax.lax.scan(lambda c, _: full_CrossQ_step(*c), carry, None, length=scan_steps)
 
-    _ = jax.block_until_ready(scanned_steps(crossq_carry))
-    end_compile = time.perf_counter()
-    print(f"[crossq] compilation time: {end_compile - start_compile:.2f}s")
+    # donate the carry so XLA reuses the replay buffer's memory; lower/compile AOT so nothing is donated before the loop
+    compiled = jax.jit(train_chunk, donate_argnums=(0,)).lower(carry).compile()
+    print(f"[crossq] compilation time: {time.perf_counter() - compile_start:.2f}s")
 
-    steps_per_iteration = config.get("NUM_ENVS") * config.get("TRAIN_FREQUENCY") * config.get("SCAN_STEPS")
-    rtpt = RTPT(name_initials=config["NAME_INITIALS"], experiment_name=run_name, max_iterations=config.get("TOTAL_TIMESTEPS") // steps_per_iteration)
+    rtpt = RTPT(name_initials=config["NAME_INITIALS"], experiment_name=run_name, max_iterations=num_chunks)
     rtpt.start()
     run_time = time.perf_counter()
-
-    print(f"[crossq] starting training for {config.get('TOTAL_TIMESTEPS')} steps...")
-    while global_step < config.get("TOTAL_TIMESTEPS"):
+    print(f"[crossq] starting training: {num_chunks} chunks x {steps_per_chunk} env steps")
+    for chunk in range(num_chunks):
         rtpt.step()
-        iteration = global_step // steps_per_iteration
-        if config["EVAL_DURING_TRAIN"] and iteration > 0 and iteration % config["EVAL_EVERY"] == 0:
-           save_and_eval(global_step)
+        if config["EVAL_DURING_TRAIN"] and chunk > 0 and chunk % config["EVAL_EVERY"] == 0:
+            save_and_eval(actor_variables_of(carry), int(carry[-1]))
 
-        iteration_time_start = time.perf_counter()
-        result = scanned_steps(crossq_carry)
-        crossq_carry, (infos, qf_loss, actor_loss, qf1_val, alpha) = result
-        global_step = int(crossq_carry[-1])
-
-        print(f"[crossq] iteration {iteration} | step {global_step} | avg_return {infos['returned_episode_returns'][-1].mean():.2f} | qf_loss {qf_loss[-1]:.4f} | act_loss {actor_loss[-1]:.4f} | SPS {int(global_step / (time.perf_counter() - run_time))}")
-
+        chunk_start = time.perf_counter()
+        carry, (infos, qf_loss, actor_loss, qf1_val, alpha) = compiled(carry)
+        global_step = int(carry[-1])
         metrics = {
-            "charts/avg_episodic_return": infos["returned_episode_returns"][-1].mean(),
-            "charts/avg_episodic_length": infos["returned_episode_lengths"][-1].mean(),
-            "losses/qf_loss": qf_loss[-1].item(),
-            "losses/actor_loss": actor_loss[-1].item(),
-            "losses/qf1_values": qf1_val[-1].item(),
-            "losses/alpha_values": alpha[-1].item(),
+            "charts/avg_episodic_return": float(infos["returned_episode_returns"][-1].mean()),
+            "charts/avg_episodic_length": float(infos["returned_episode_lengths"][-1].mean()),
+            "losses/qf_loss": float(qf_loss[-1]),
+            "losses/actor_loss": float(actor_loss[-1]),
+            "losses/qf1_values": float(qf1_val[-1]),
+            "losses/alpha_values": float(alpha[-1]),
             "charts/SPS": int(global_step / (time.perf_counter() - run_time)),
-            "charts/SPS_update": int(config["NUM_ENVS"] * config["TRAIN_FREQUENCY"] * config["SCAN_STEPS"]  / (time.perf_counter() - iteration_time_start)),
+            "charts/SPS_update": int(steps_per_chunk / (time.perf_counter() - chunk_start)),
             "charts/time": time.perf_counter() - run_time,
             "charts/global_step": global_step,
         }
         wandb.log(metrics, step=global_step)
+        print(
+            f"[crossq] chunk {chunk + 1}/{num_chunks} | global_step {global_step} | "
+            f"avg_return {metrics['charts/avg_episodic_return']:.2f} | "
+            f"avg_length {metrics['charts/avg_episodic_length']:.2f} | "
+            f"qf_loss {metrics['losses/qf_loss']:.4f} | act_loss {metrics['losses/actor_loss']:.4f} | "
+            f"alpha {metrics['losses/alpha_values']:.4f} | SPS {metrics['charts/SPS']}"
+        )
 
-    eval_metrics = save_and_eval(global_step+1)
+    eval_metrics = save_and_eval(actor_variables_of(carry), global_step + 1)
     wandb.finish()
     return eval_metrics
