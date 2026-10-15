@@ -34,6 +34,14 @@ def main(config):
             from agents.simba_pqn.simba_pqn import single_run
         elif alg == "SIMBA_SAC":
             from agents.simba_sac.simba_sac import single_run
+        elif alg == "SAC":
+            from agents.sac.sac import single_run
+        elif alg == "TD3":
+            from agents.td3.td3 import single_run
+        elif alg == "DDPG":
+            from agents.ddpg.ddpg import single_run
+        elif alg == "CROSSQ":
+            from agents.crossq.crossq import single_run
         else:
             raise ValueError(f"Unknown ALG: {alg}")
 
