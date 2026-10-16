@@ -35,3 +35,27 @@ def game_states(states):
     while not isinstance(states, AtariState):
         states = states.atari_state
     return states.env_state
+
+
+def rm_metrics(infos) -> dict:
+    """Charts for the RM side of the last finished episodes; {} for runs without a reward machine.
+
+    `infos` are the stacked step infos of a chunk; like charts/avg_episodic_return,
+    the values are taken at the chunk's last step and averaged over the envs.
+    """
+    import numpy as np
+
+    if "returned_episode_rm_return" not in infos:
+        return {}
+    last = {k: np.asarray(v[-1]) for k, v in infos.items() if k.startswith("returned_episode_rm_")}
+    num_states = last["returned_episode_rm_state_returns"].shape[-1]
+    state_returns = last["returned_episode_rm_state_returns"].reshape(-1, num_states).mean(axis=0)
+    state_steps = last["returned_episode_rm_state_steps"].reshape(-1, num_states).mean(axis=0)
+    metrics = {
+        "charts/avg_episodic_rm_return": float(last["returned_episode_rm_return"].mean()),
+        "charts/avg_episodic_rm_shaping": float(last["returned_episode_rm_shaping"].mean()),
+    }
+    for u in range(num_states):
+        metrics[f"rm/return_u{u}"] = float(state_returns[u])
+        metrics[f"rm/steps_u{u}"] = float(state_steps[u])
+    return metrics

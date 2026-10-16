@@ -23,7 +23,7 @@ from jaxtari.wrappers import (
     FlattenObservationWrapper,
 )
 from agents.iqn.iqn_eval import evaluate
-from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.run_utils import eval_mod_configs, plan_chunks, rm_metrics
 from agents.networks import impala_cnn
 from agents.occam.occam import OCCAMWrapper, log_occam_comparison_video
 from reward_machines.rm_registry import rm_run_suffix, rm_settings, wrap_reward_machine
@@ -440,6 +440,7 @@ def single_run(config: dict):
             "charts/time": time.perf_counter() - run_time,
             "charts/global_step": global_step,
         }
+        metrics.update(rm_metrics(infos))
         wandb.log(metrics, step=global_step)
         print(
             f"[iqn] chunk {chunk + 1}/{num_chunks} | global_step {global_step} | "

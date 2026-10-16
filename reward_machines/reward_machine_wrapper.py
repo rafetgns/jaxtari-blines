@@ -31,11 +31,26 @@ class TimeStep:
 
 
 @struct.dataclass
+class RMEpisodeStats:
+    """Per-episode RM bookkeeping, logged like LogWrapper's returns (one game episode, not one life)."""
+    rm_return: jnp.ndarray       # RM reward, without shaping
+    rm_shaping: jnp.ndarray      # potential-based shaping
+    state_returns: jnp.ndarray   # (num_states,) RM reward credited to the state the transition left
+    state_steps: jnp.ndarray     # (num_states,) steps spent in each RM state
+
+    @classmethod
+    def zeros(cls, num_states):
+        return cls(jnp.zeros(()), jnp.zeros(()), jnp.zeros(num_states), jnp.zeros(num_states, jnp.int32))
+
+
+@struct.dataclass
 class RewardMachineState:
     atari_state: Any        # the wrapped ObjectCentricState; the name lets state walkers reach the game state
     u: jnp.ndarray          # current RM state
     prev_obs: jnp.ndarray   # previous (flattened, normalised) observation, for CRM experiences
     prev_phi: jnp.ndarray   # shaping potential of the previous step
+    episode: RMEpisodeStats           # running sums of the current episode
+    returned_episode: RMEpisodeStats  # sums of the last finished episode
 
 
 class RewardMachineWrapper(JaxtariWrapper):
@@ -48,6 +63,11 @@ class RewardMachineWrapper(JaxtariWrapper):
     appended. During training the reward is the RM reward (plus the optional
     potential-based shaping); with `eval=True` it is the game's own reward, so
     evaluation scores the game whatever the RM pays.
+
+    LogWrapper on top keeps logging the game's return (from info["env_reward"]);
+    this wrapper adds the RM's side of each finished episode to info as
+    returned_episode_rm_{return, shaping, state_returns, state_steps}, which
+    agents/run_utils.rm_metrics turns into charts.
     """
 
     def __init__(
@@ -111,6 +131,8 @@ class RewardMachineWrapper(JaxtariWrapper):
             u=jnp.array(self.rm.init_state, dtype=jnp.int32),
             prev_obs=obs,
             prev_phi=phi,
+            episode=RMEpisodeStats.zeros(self.rm.num_states),
+            returned_episode=RMEpisodeStats.zeros(self.rm.num_states),
         )
         return self._augment_obs(obs, state.u), state
 
@@ -163,9 +185,25 @@ class RewardMachineWrapper(JaxtariWrapper):
         if self.options is not None:
             info["option_rewards"], info["option_terminate"] = self._option_signals(state.u, true_props)
 
-        next_u = jnp.where(episode_over, self.rm.init_state, next_u)
-        new_state = RewardMachineState(atari_state=inner_state, u=next_u, prev_obs=obs, prev_phi=phi)
+        # episode sums, closed at the same boundary as LogWrapper's (game over or truncation)
+        in_u = jax.nn.one_hot(state.u, self.rm.num_states)
+        running = RMEpisodeStats(
+            rm_return=state.episode.rm_return + rm_reward,
+            rm_shaping=state.episode.rm_shaping + shaping,
+            state_returns=state.episode.state_returns + in_u * rm_reward,
+            state_steps=state.episode.state_steps + in_u.astype(jnp.int32),
+        )
+        returned = jax.tree.map(lambda new, old: jnp.where(episode_over, new, old), running, state.returned_episode)
+        running = jax.tree.map(lambda x: jnp.where(episode_over, jnp.zeros_like(x), x), running)
 
+        next_u = jnp.where(episode_over, self.rm.init_state, next_u)
+        new_state = RewardMachineState(atari_state=inner_state, u=next_u, prev_obs=obs, prev_phi=phi,
+                                       episode=running, returned_episode=returned)
+
+        info["returned_episode_rm_return"] = returned.rm_return
+        info["returned_episode_rm_shaping"] = returned.rm_shaping
+        info["returned_episode_rm_state_returns"] = returned.state_returns
+        info["returned_episode_rm_state_steps"] = returned.state_steps
         info["rm_fired_idx"] = fired_idx
         info["rm_reward"] = rm_reward
         info["shaping"] = shaping

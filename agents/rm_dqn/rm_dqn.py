@@ -35,7 +35,7 @@ from jaxtari.wrappers import (
     LogWrapper,
 )
 from agents.dqn.dqn_eval import evaluate
-from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.run_utils import eval_mod_configs, plan_chunks, rm_metrics
 from reward_machines.reward_machine_wrapper import TimeStep
 from reward_machines.rm_registry import GAME_RM_REGISTRY, wrap_reward_machine
 from rtpt import RTPT
@@ -313,7 +313,7 @@ def single_run(config: dict):
         carry, (infos, loss, q_val) = compiled(carry)
         global_step = int(carry[-1])
         metrics = {
-            # the RM return (what the agent optimises); eval/ reports the game's own score
+            # the game's return (LogWrapper logs info["env_reward"]); the RM's side comes from rm_metrics
             "charts/avg_episodic_return": float(infos["returned_episode_returns"][-1].mean()),
             "charts/avg_episodic_length": float(infos["returned_episode_lengths"][-1].mean()),
             "charts/rm_reward_per_step": float(infos["rm_reward"].mean()),
@@ -326,11 +326,12 @@ def single_run(config: dict):
         }
         fired = np.asarray(infos["rm_fired"].sum(axis=(0, 1)))  # (scan, train_freq, T) -> (T,)
         metrics.update({f"rm/transition_{i}": float(n) for i, n in enumerate(fired)})
+        metrics.update(rm_metrics(infos))
         wandb.log(metrics, step=global_step)
         print(
             f"[rm_dqn] chunk {chunk + 1}/{num_chunks} | global_step {global_step} | "
             f"avg_return {metrics['charts/avg_episodic_return']:.2f} | "
-            f"rm_reward/step {metrics['charts/rm_reward_per_step']:.4f} | "
+            f"rm_return {metrics.get('charts/avg_episodic_rm_return', 0.0):.2f} | "
             f"td_loss {metrics['losses/td_loss']:.4f} | SPS {metrics['charts/SPS']}"
         )
 

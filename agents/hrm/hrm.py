@@ -38,7 +38,7 @@ from jaxtari.wrappers import (
 from rtpt import RTPT
 
 from agents.hrm.hrm_eval import evaluate
-from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.run_utils import eval_mod_configs, plan_chunks, rm_metrics
 from reward_machines.options import OptionSpec, build_options
 from reward_machines.rm_registry import GAME_RM_REGISTRY, wrap_reward_machine
 
@@ -535,7 +535,7 @@ def single_run(config: dict):
         carry, (infos, m) = compiled(carry)
         global_step = int(carry[-1])
         metrics = {
-            # the RM return (what the agent optimises); eval/ reports the game's own score
+            # the game's return (LogWrapper logs info["env_reward"]); the RM's side comes from rm_metrics
             "charts/avg_episodic_return": float(infos["returned_episode_returns"][-1].mean()),
             "charts/avg_episodic_length": float(infos["returned_episode_lengths"][-1].mean()),
             "charts/rm_reward_per_step": float(m["rm_reward"].mean()),
@@ -552,6 +552,7 @@ def single_run(config: dict):
         for i, name in enumerate(options.names):
             metrics[f"options/selected_{i}_{name}"] = float(hist[i])
             metrics[f"options/achieved_{i}_{name}"] = float(hits[i])
+        metrics.update(rm_metrics(infos))
         wandb.log(metrics, step=global_step)
         print(
             f"[hrm] chunk {chunk + 1}/{num_chunks} | global_step {global_step} | "
