@@ -29,3 +29,7 @@ CAPTURE_VIDEO: True
 
 # conv encoder for pixel-based runs: "nature" (Mnih et al., 2015) or "impala" (Espeholt et al., 2018); ignored for OC
 CNN_TYPE: nature
+
+# OCCAM (Blüml et al., 2025) for pixel-based runs: object masks instead of frames.
+# null = plain frames, or one of binary | object | class | planes; ignored for OC
+OCCAM_MASK: null

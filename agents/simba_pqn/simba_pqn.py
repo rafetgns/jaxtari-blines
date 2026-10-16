@@ -25,10 +25,11 @@ from jaxtari.wrappers import (
 )
 from agents.run_utils import eval_mod_configs, plan_chunks
 from agents.networks import impala_cnn
+from agents.occam.occam import OCCAMWrapper, log_occam_comparison_video
 from agents.simba_pqn.simba_pqn_eval import evaluate
 
 
-def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=False):
+def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=False, occam_mask=None):
     mods = list(mods) if mods else None
     if not eval and mods:
         print(f"[WARNING] Training on mods {mods}!")
@@ -43,7 +44,10 @@ def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=
             noop_max=30,
             full_action_space=False,
         )
-        if pixel_based:
+        if pixel_based and occam_mask:
+            # object masks instead of frames; same frame skip, pooling and stacking as PixelObsWrapper
+            env = OCCAMWrapper(env, mask_mode=occam_mask, clip_reward=not eval, game_name=env_id)
+        elif pixel_based:
             env = PixelObsWrapper(
                 env,
                 do_pixel_resize=True,
@@ -156,7 +160,7 @@ def single_run(config: dict):
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
     env_id = config["ENV_ID"]
     pixel_based = config["PIXEL_BASED"]
-    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
+    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel' + ('_occam-' + config['OCCAM_MASK'] if config.get('OCCAM_MASK') else '') + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -197,7 +201,7 @@ def single_run(config: dict):
         expansion_factor=simba_expansion_factor,
     )
 
-    env = make_env(env_id, list(config.get("TRAIN_MODS") or []), pixel_based, config.get("NATIVE_DOWNSCALING", True))()
+    env = make_env(env_id, list(config.get("TRAIN_MODS") or []), pixel_based, config.get("NATIVE_DOWNSCALING", True), occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None)()
     action_dim = env.action_space().n
     obs_shape = env.observation_space().shape
     if pixel_based:
@@ -343,6 +347,7 @@ def single_run(config: dict):
                     pixel_based=pixel_based,
                     native_downscaling=config.get("NATIVE_DOWNSCALING", True),
                     eval=True,
+                    occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None,
                 ),
                 env_id,
                 eval_episodes=10,
@@ -359,6 +364,9 @@ def single_run(config: dict):
                 video = wandb.Video(np.array(frames), fps=30, format="mp4")
                 wandb.log({f"eval/video_{mod_label}": video}, step=step_count)
                 print(f"Video (eval) logged to wandb with {frames.shape[0]} frames ({mod_label}).")
+                if config["PIXEL_BASED"] and config.get("OCCAM_MASK"):
+                    log_occam_comparison_video(config["ENV_ID"], config["OCCAM_MASK"], env_states,
+                                               mods=mods_cfg, mod_label=mod_label, step=step_count)
         return metrics
 
     def train_chunk(carry):

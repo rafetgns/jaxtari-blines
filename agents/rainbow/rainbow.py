@@ -24,10 +24,11 @@ from jaxtari.wrappers import (
 from agents.rainbow.rainbow_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
 from agents.networks import impala_cnn
+from agents.occam.occam import OCCAMWrapper, log_occam_comparison_video
 from rtpt import RTPT
 
 
-def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False):
+def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False, occam_mask=None):
     assert mods is None or isinstance(mods, list), "mods must be None or a list of strings"
     if mods is not None and len(mods) == 0:
         mods = None
@@ -44,7 +45,10 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
             noop_max=30,
             full_action_space=False,
         )
-        if pixel_based:
+        if pixel_based and occam_mask:
+            # object masks instead of frames; same frame skip, pooling and stacking as PixelObsWrapper
+            env = OCCAMWrapper(env, mask_mode=occam_mask, clip_reward=not eval, game_name=env_id)
+        elif pixel_based:
             env = PixelObsWrapper(
                 env,
                 do_pixel_resize=True,
@@ -170,7 +174,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_occam-' + config['OCCAM_MASK'] if config.get('OCCAM_MASK') else '') + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -196,6 +200,7 @@ def single_run(config: dict):
         config.get("PIXEL_BASED", True),
         config.get("NATIVE_DOWNSCALING", True),
         False,
+        occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None,
     )()
 
     action_dim = env.action_space().n
@@ -441,6 +446,7 @@ def single_run(config: dict):
                     pixel_based=config["PIXEL_BASED"],
                     native_downscaling=config["NATIVE_DOWNSCALING"],
                     eval=True,
+                    occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None,
                 ),
                 config["ENV_ID"],
                 eval_episodes=10,
@@ -460,6 +466,9 @@ def single_run(config: dict):
                 video = wandb.Video(np.array(frames), fps=30, format="mp4")
                 wandb.log({f"eval/video_{mod_label}": video}, step=step_count)
                 print(f"Video (eval) logged to wandb with {frames.shape[0]} frames ({mod_label}).")
+                if config["PIXEL_BASED"] and config.get("OCCAM_MASK"):
+                    log_occam_comparison_video(config["ENV_ID"], config["OCCAM_MASK"], env_states,
+                                               mods=mods_cfg, mod_label=mod_label, step=step_count)
         return metrics
 
     # same budget rule for every agent: whole jitted chunks within TOTAL_TIMESTEPS

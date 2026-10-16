@@ -1,21 +1,13 @@
-"""OCCAM (Object-Centric Attention via Masking) for JAXAtari.
+"""OCCAM (Object-Centric Attention via Masking) for JAXtari.
 
-Port of Bluml et al. (2025), arXiv:2504.03024, reference code
+Port of Blüml et al. (2025), arXiv:2504.03024, reference code
 https://github.com/VanillaWhey/OCAtariWrappers. Masks are built from each game's
 ObjectObservation groups (one group = one class), drawn at native resolution and
 area-downscaled to 84x84, so edge pixels keep partial coverage values.
 
-Usage
-    uv run main.py --config-name occam
-    uv run main.py --config-name occam ENV_ID=breakout MASK_MODE=planes
-
-Config keys (config/occam.yaml)
-    OCCAM               use OCCAMWrapper instead of PixelObsWrapper
-    MASK_MODE           object | binary | class | planes
-    OCCAM_FRAME_STACK   frames per observation, >= 2
-    OCCAM_FRAME_SKIP    emulator frames per agent step
-    OCCAM_MAX_POOLING   max over the last two frames, affects "object" only
-    VIDEO_EVERY         iterations between eval comparison videos
+Usage: any pixel-based agent, with OCCAMWrapper in place of PixelObsWrapper
+    uv run main.py +alg=dqn_rgb_tuned OCCAM_MASK=binary
+    uv run main.py +alg=ppo_rgb ENV_ID=breakout OCCAM_MASK=planes
 
 Mask modes (F = frame stack, K = object groups)
     object   grayscale pixels inside boxes, background 0    (F, 84, 84, 1)
@@ -25,8 +17,7 @@ Mask modes (F = frame stack, K = object groups)
 
 Python
     OCCAMWrapper(AtariWrapper(jaxtari.make("pong")), mask_mode="class")
-    log_occam_comparison_video   eval clip [clean | boxes | mask] to W&B, optional .npy
-    build_occam_summary_video    all saved eval clips of one game in one video
+    log_occam_comparison_video   eval clip [clean | boxes | mask] to W&B
 
 A game may declare OCCAM_RENDER_ORDER (group names, back to front) for the visualization.
 """
@@ -295,7 +286,7 @@ class OCCAMWrapper(JaxtariWrapper):
         img_shape = self.base_env.image_space().shape
         self.img_h, self.img_w = int(img_shape[0]), int(img_shape[1])
 
-        probe_obs = self.base_env._get_observation(self.base_env.reset(jax.random.PRNGKey(0))[1])
+        probe_obs, _ = self.base_env.reset(jax.random.PRNGKey(0))
         self.num_classes = len(_extract_object_groups(probe_obs))
 
         if self.num_classes == 0:
@@ -341,9 +332,8 @@ class OCCAMWrapper(JaxtariWrapper):
 
     def _reset_internal(self, key):
         reset_key, _ = jax.random.split(key)
-        _, atari_state = self._env.reset(reset_key)
+        obs, atari_state = self._env.reset(reset_key)
         frame = self.base_env.render(atari_state.env_state)
-        obs = self.base_env._get_observation(atari_state.env_state)
         m = self._mask_single(frame, obs)
         mask_stack = jnp.stack([m] * self.frame_stack_size)
         return mask_stack, OCCAMState(atari_state, mask_stack)
@@ -357,14 +347,14 @@ class OCCAMWrapper(JaxtariWrapper):
     def step(self, state: OCCAMState, action: int):
         def body_fn(carry, _):
             atari_state, action = carry
-            _, new_atari_state, reward, terminated, truncated, info = self._env.step(
+            obs, new_atari_state, reward, terminated, truncated, info = self._env.step(
                 atari_state, action
             )
             return (new_atari_state, action), (
-                new_atari_state.env_state, reward, terminated, truncated, info
+                obs, new_atari_state.env_state, reward, terminated, truncated, info
             )
 
-        (atari_state, _), (env_states, rewards, terminations, truncations, infos) = jax.lax.scan(
+        (atari_state, _), (step_obs, env_states, rewards, terminations, truncations, infos) = jax.lax.scan(
             body_fn, (state.atari_state, action), None, length=self.frame_skip
         )
 
@@ -378,7 +368,7 @@ class OCCAMWrapper(JaxtariWrapper):
         else:
             frame = self.base_env.render(last_env_state)
 
-        obs = self.base_env._get_observation(last_env_state)
+        obs = jax.tree.map(lambda z: z[-1], step_obs)
         new_mask = self._mask_single(frame, obs)
         mask_stack = jnp.concatenate([state.mask_stack[1:], new_mask[None]], axis=0)
 
@@ -407,7 +397,12 @@ class OCCAMWrapper(JaxtariWrapper):
 
 
 class _OCCAMViz:
-    """[clean | obs boxes | mask (| sheets)] video frames, native or at observation resolution."""
+    """[clean | obs boxes | mask (| sheets)] video frames, native or at observation resolution.
+
+    The frames are drawn from recorded game states, which carry no observation,
+    so this uses the game's private `_get_observation`; JAXtari has no public
+    state -> observation call. Training and evaluation never go through it.
+    """
 
     def __init__(self, base_env, mask_mode: str, obs_res: bool = False,
                  out_size: Tuple[int, int] = (84, 84)):
@@ -418,7 +413,7 @@ class _OCCAMViz:
         self.img_h, self.img_w = int(img_shape[0]), int(img_shape[1])
         self.out_h, self.out_w = int(out_size[0]), int(out_size[1])
 
-        probe = base_env._get_observation(base_env.reset(jax.random.PRNGKey(0))[1])
+        probe, _ = base_env.reset(jax.random.PRNGKey(0))
         self.num_classes = len(_extract_object_groups(probe))
         self.group_names = _group_names(probe)
         self.render_order = _render_order(base_env, self.group_names)
@@ -516,10 +511,10 @@ class _OCCAMViz:
 
 
 def occam_comparison_frames(env_id: str, mask_mode: str, env_states, mods=None):
-    """Eval rollout -> (T, H, W_row, 3) uint8 frames with legend, plus layout meta for the summary."""
+    """Eval rollout -> (T, H, W_row, 3) uint8 frames with a colour key and panel headers."""
     import jaxtari
 
-    base_env = jaxtari.make(env_id, mods=mods)
+    base_env = jaxtari.make(env_id, mods=mods or None)
     viz = _OCCAMViz(base_env, mask_mode)
     frames = np.asarray(viz.frames(env_states), dtype=np.uint8)
     counts = np.asarray(viz.counts(env_states), dtype=np.int32)
@@ -539,17 +534,7 @@ def occam_comparison_frames(env_id: str, mask_mode: str, env_states, mods=None):
                        for i, n in enumerate(viz.group_names)]
             cache[key] = _legend_strip(total_w, entries)
         out.append(np.concatenate([cache[key], header, frames[t]], axis=0))
-    stacked = np.stack(out)
-    meta = {
-        "mask_mode": mask_mode,
-        "panels": [[name, int(w)] for name, w in layout],
-        "legend_h": int(_legend_height(len(viz.group_names))),
-        "head_h": int(HEAD_H),
-        "groups": list(viz.group_names),
-        "colors": [[int(c) for c in palette[i + 1]] for i in range(viz.num_classes)],
-        "counts": counts.tolist(),
-    }
-    return stacked, meta
+    return np.stack(out)
 
 
 def _to_chw(frames_thwc: np.ndarray) -> np.ndarray:
@@ -559,11 +544,10 @@ def _to_chw(frames_thwc: np.ndarray) -> np.ndarray:
 
 LEG_LINE_H = 15
 HEAD_H = 16
-TITLE_H = 22
 
 
 def _legend_height(n_entries: int) -> int:
-    """Height of _legend_strip for n entries, used to cut it off in the summary."""
+    """Height of _legend_strip for n entries."""
     n = max(1, int(n_entries))
     rows = 1 if n <= 6 else (n + 5) // 6
     return rows * LEG_LINE_H + 4
@@ -641,17 +625,6 @@ def _caption_clip(frames_thwc: np.ndarray, text: str, banner_h: int = 16) -> np.
     return np.pad(out, [(0, 0), (0, out.shape[1] % 2), (0, out.shape[2] % 2), (0, 0)])
 
 
-def save_eval_frames(save_dir: str, mod_label: str, frames_thwc: np.ndarray, meta: dict | None = None):
-    """Write frames to <save_dir>/eval_<mod_label>.npy (+ .json layout sidecar)."""
-    import os
-    import json
-    os.makedirs(save_dir, exist_ok=True)
-    np.save(os.path.join(save_dir, f"eval_{mod_label}.npy"), frames_thwc)
-    if meta is not None:
-        with open(os.path.join(save_dir, f"eval_{mod_label}.json"), "w") as f:
-            json.dump(meta, f)
-
-
 def log_occam_comparison_video(
     env_id: str,
     mask_mode: str,
@@ -660,132 +633,11 @@ def log_occam_comparison_video(
     mod_label: str = "default",
     step: int = 0,
     fps: int = 30,
-    save_dir: str | None = None,
 ):
-    """Render, caption and log a [game | mask] eval clip to W&B; with save_dir also keep it as .npy."""
+    """Render, caption and log a [clean | boxes | mask] eval clip to W&B as eval/video_occam_<mod_label>."""
     import wandb
 
-    frames, meta = occam_comparison_frames(env_id, mask_mode, env_states, mods=mods)
-    if save_dir is not None:
-        save_eval_frames(save_dir, mod_label, frames, meta=meta)
+    frames = occam_comparison_frames(env_id, mask_mode, env_states, mods=mods)
     captioned = _caption_clip(frames, f"{env_id} | {mask_mode} | {mod_label} | step {step}")
-    key = f"eval/{env_id}/{mask_mode}/{mod_label}"
-    wandb.log({key: wandb.Video(_to_chw(captioned), fps=fps, format="mp4")}, step=step)
-    return captioned
-
-
-def build_occam_summary_video(
-    env_id: str,
-    save_root: str,
-    mods=None,
-    mask_modes=MASK_MODES,
-    out_name: str | None = None,
-    fps: int = 30,
-    hold_last_seconds: float = 4.0,
-    wandb_project: str | None = None,
-    wandb_entity: str | None = None,
-    wandb_tags=None,
-    wandb_run_name: str | None = None,
-):
-    """One video per game with a row per saved (mod, mask mode) eval clip.
-
-    Rows keep their own rollout, narrower rows are padded, the colour key is drawn once.
-    Returns (path or None, number of frames).
-    """
-    import os
-    import glob
-    import json
-
-    if not mods:
-        found = set()
-        for mm in mask_modes:
-            for p in glob.glob(os.path.join(save_root, env_id, mm, "eval_*.npy")):
-                found.add(os.path.basename(p)[len("eval_"):-len(".npy")])
-        mods = sorted(found) if found else ["default"]
-    mods = sorted(mods, key=lambda m: (m != "default", m))
-
-    rows, max_len, total_w, key_meta = [], 0, 0, None
-    for mod in mods:
-        for mm in mask_modes:
-            p = os.path.join(save_root, env_id, mm, f"eval_{mod}.npy")
-            if not os.path.exists(p):
-                continue
-            side = p[: -len(".npy")] + ".json"
-            meta = {}
-            if os.path.exists(side):
-                with open(side) as f:
-                    meta = json.load(f)
-            c = np.load(p, mmap_mode="r")
-            rows.append((mod, mm, c, int(meta.get("legend_h", 0))))
-            max_len = max(max_len, c.shape[0])
-            total_w = max(total_w, c.shape[2])
-            if key_meta is None and meta.get("groups"):
-                key_meta = meta
-    if not rows:
-        print(f"[warn] no eval clips under {os.path.join(save_root, env_id)}")
-        return None, None
-
-    row_gap = 6
-    labels = {(mod, mm): _strip(total_w, HEAD_H, f"{mm}  -  {mod}")
-              for mod, mm, _, _ in rows}
-    title = _strip(total_w, TITLE_H, f"{env_id}  -  OCCAM mask comparison", font_size=16)
-    if key_meta:
-        legend = _legend_strip(total_w, [(n, None, tuple(key_meta["colors"][i]))
-                                         for i, n in enumerate(key_meta["groups"])])
-    else:
-        legend = np.zeros((0, total_w, 3), np.uint8)
-    gap = np.zeros((row_gap, total_w, 3), np.uint8)
-
-    T = max_len
-
-    def grid_frame(t_src):
-        blocks = [title, legend]
-        for mod, mm, c, legend_h in rows:
-            frame = np.asarray(c[min(t_src, c.shape[0] - 1)])[legend_h:]
-            if frame.shape[1] < total_w:
-                frame = np.pad(frame, [(0, 0), (0, total_w - frame.shape[1]), (0, 0)])
-            blocks += [labels[(mod, mm)], frame[:, :total_w], gap]
-        g = np.concatenate(blocks, axis=0)
-        return np.pad(g, [(0, g.shape[0] % 2), (0, g.shape[1] % 2), (0, 0)])
-
-    out_name = out_name or f"summary_{env_id}.mp4"
-    out_path = os.path.join(save_root, env_id, out_name)
-    os.makedirs(os.path.dirname(os.path.abspath(out_path)), exist_ok=True)
-    hold_n = max(0, int(round(hold_last_seconds * fps)))
-
-    written = None
-    try:
-        import imageio.v3 as iio
-        with iio.imopen(out_path, "w", plugin="pyav") as f:
-            f.init_video_stream("libx264", fps=fps)
-            last = None
-            for t in range(max_len):
-                last = grid_frame(t)
-                f.write_frame(np.ascontiguousarray(last, dtype=np.uint8))
-            for _ in range(hold_n):
-                if last is not None:
-                    f.write_frame(np.ascontiguousarray(last, dtype=np.uint8))
-        written = out_path
-        T += hold_n
-    except Exception as e:
-        print(f"[warn] summary encode failed: {e}")
-        written = None
-
-    if wandb_project and written is not None:
-        try:
-            import wandb
-            import time
-            run = wandb.init(
-                project=wandb_project,
-                entity=(wandb_entity or None),
-                name=wandb_run_name or f"summary_{env_id}_{int(time.time())}",
-                tags=list(wandb_tags) if wandb_tags else ["summary", env_id],
-                job_type="summary",
-                reinit=True,
-            )
-            run.log({f"summary/{env_id}": wandb.Video(written, fps=fps, format="mp4")})
-            run.finish()
-        except Exception as e:
-            print(f"[warn] W&B summary upload failed: {e}")
-
-    return written, T
+    wandb.log({f"eval/video_occam_{mod_label}": wandb.Video(_to_chw(captioned), fps=fps, format="mp4")}, step=step)
+    print(f"OCCAM comparison video logged to wandb with {frames.shape[0]} frames ({mod_label}).")
