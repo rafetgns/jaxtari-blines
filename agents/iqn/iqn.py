@@ -73,7 +73,15 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
         return env
     return thunk
 
+def cosine_embedding(tau, embedding_dim):
+    """cos(pi * i * tau) for i = 1..embedding_dim: (B, N) -> (B, N, embedding_dim)."""
+    i = jnp.arange(1, embedding_dim + 1, dtype=jnp.float32)
+    return jnp.cos(jnp.pi * tau[:, :, None] * i[None, None, :])
+
+
 class QNetwork(nn.Module):
+    """IQN network as in Dabney et al. (2018) and Dopamine: the tau embedding gates the
+    conv features psi, followed by the 512-unit layer and the per-action quantile output."""
     action_dim: int
     embedding_dim: int = 64
     cnn_type: str = "nature"
@@ -93,33 +101,28 @@ class QNetwork(nn.Module):
             x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID")(x)
             x = nn.relu(x)
             x = x.reshape((x.shape[0], -1))
-        psi = nn.Dense(512)(x)
-        psi = nn.relu(psi)
-        i = jnp.arange(1, self.embedding_dim + 1, dtype=jnp.float32)
-        cos_feat = jnp.cos(jnp.pi * tau[:, :, None] * i[None, None, :])
-        phi = nn.Dense(512)(cos_feat)
-        phi = nn.relu(phi)
-        combined = psi[:, None, :] * phi
-        x = nn.Dense(self.action_dim)(combined)
-        return x
+        psi = x
+        phi = nn.relu(nn.Dense(psi.shape[-1])(cosine_embedding(tau, self.embedding_dim)))
+        x = psi[:, None, :] * phi
+        x = nn.relu(nn.Dense(512)(x))
+        return nn.Dense(self.action_dim)(x)
 
 class MLP_QNetwork(nn.Module):
+    """OC counterpart: the 461-unit layer plays the role of the conv stack (it is sized to
+    match its parameter count), so the tau embedding is merged after it and before 512."""
     action_dim: int
     embedding_dim: int = 64
 
     @nn.compact
     def __call__(self, x, tau):
         x = nn.Dense(461, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        psi = nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        psi = nn.relu(psi)
-        i = jnp.arange(1, self.embedding_dim + 1, dtype=jnp.float32)
-        cos_feat = jnp.cos(jnp.pi * tau[:, :, None] * i[None, None, :])
-        phi = nn.Dense(512)(cos_feat)
-        phi = nn.relu(phi)
-        combined = psi[:, None, :] * phi
-        x = nn.Dense(self.action_dim, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(combined)
-        return x
+        psi = nn.relu(x)
+        phi = nn.Dense(psi.shape[-1], kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(
+            cosine_embedding(tau, self.embedding_dim)
+        )
+        x = psi[:, None, :] * nn.relu(phi)
+        x = nn.relu(nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
+        return nn.Dense(self.action_dim, kernel_init=orthogonal(1.0), bias_init=constant(0.0))(x)
 
 class IQNTrainState(TrainState):
     target_params: flax.core.FrozenDict
