@@ -23,6 +23,7 @@ from jaxtari.wrappers import (
 )
 from agents.rainbow.rainbow_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 
@@ -107,47 +108,7 @@ class NoisyDense(nn.Module):
         return x @ kernel + bias
 
 
-class ImpalaResidualBlock(nn.Module):
-    channels: int
 
-    @nn.compact
-    def __call__(self, x):
-        inputs = x
-        x = nn.relu(x)
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        x = nn.relu(x)
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        return x + inputs
-
-
-class ImpalaConvSequence(nn.Module):
-    channels: int
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding="SAME")
-        x = ImpalaResidualBlock(self.channels)(x)
-        x = ImpalaResidualBlock(self.channels)(x)
-        return x
-
-
-class ImpalaCNN(nn.Module):
-    channels: tuple = (16, 32, 32)
-
-    @nn.compact
-    def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))          
-        x = x.astype(jnp.float32) / 255.0
-        for ch in self.channels:
-            x = ImpalaConvSequence(ch)(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        return x
-
-    
 class RainbowCNNNetwork(nn.Module):
     action_dim: int
     n_atoms: int
@@ -157,7 +118,7 @@ class RainbowCNNNetwork(nn.Module):
     @nn.compact
     def __call__(self, x, deterministic=False):
         if self.cnn_type == "impala":
-            x = ImpalaCNN()(x)
+            x = impala_cnn(x)
         else:
             x = jnp.transpose(x, (0, 2, 3, 1))
             x = x.astype(jnp.float32) / 255.0
@@ -209,7 +170,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel'}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),

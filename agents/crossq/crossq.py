@@ -24,6 +24,7 @@ from jaxtari.wrappers import (
 )
 from agents.crossq.crossq_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 # CrossQ for Atari performs poorly, it either doesn't converge or converge worse than SAC.
@@ -259,33 +260,45 @@ class BatchRenorm(nn.Module):
 class Pixel_Actor_Discrete(nn.Module):
     action_dim: int
     configs: dict
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x, step, key, train=False):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32) / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(
+                x,
+                kernel_init=nn.initializers.he_normal(),
+                norm=lambda h: BatchRenorm(use_running_average=not train,
+                    momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                    configs=self.configs,
+                    network=1,
+                )(h, step),
+            )
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32) / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = BatchRenorm(use_running_average=not train,
+                momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                configs=self.configs,
+                network=1,
+            )(x, step)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = BatchRenorm(use_running_average=not train,
+                momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                configs=self.configs,
+                network=1,
+            )(x, step)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = BatchRenorm(use_running_average=not train,
+                momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                configs=self.configs,
+                network=1,
+            )(x, step)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0)  )(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
@@ -302,33 +315,45 @@ class Pixel_Actor_Discrete(nn.Module):
 class Pixel_Critic(nn.Module):
     action_dim: int
     configs: dict
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x, step, train = False):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32) / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = BatchRenorm(use_running_average=not train,
-            momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
-            configs=self.configs,
-            network=1,
-        )(x, step)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(
+                x,
+                kernel_init=nn.initializers.he_normal(),
+                norm=lambda h: BatchRenorm(use_running_average=not train,
+                    momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                    configs=self.configs,
+                    network=1,
+                )(h, step),
+            )
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32) / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = BatchRenorm(use_running_average=not train,
+                momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                configs=self.configs,
+                network=1,
+            )(x, step)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = BatchRenorm(use_running_average=not train,
+                momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                configs=self.configs,
+                network=1,
+            )(x, step)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = BatchRenorm(use_running_average=not train,
+                momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
+                configs=self.configs,
+                network=1,
+            )(x, step)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         x = nn.Dense(2048, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         x = BatchRenorm(use_running_average=not train,
             momentum=self.configs.get("BATCHNORM_MOMENTUM", 0.99),
@@ -405,7 +430,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel'}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -482,8 +507,8 @@ def single_run(config: dict):
     actor_key, actor_key2, qf_key = jax.random.split(init_key, 3)
 
     if config.get("PIXEL_BASED", True):
-        actor_net = Pixel_Actor_Discrete(action_dim=action_dim, configs=config)
-        critic_net = TwinCritic(action_dim=action_dim, configs=config)
+        actor_net = Pixel_Actor_Discrete(action_dim=action_dim, configs=config, cnn_type=config.get("CNN_TYPE", "nature"))
+        critic_net = TwinCritic(action_dim=action_dim, configs=config, cnn_type=config.get("CNN_TYPE", "nature"))
     else:
         actor_net = MLP_Actor_Discrete(action_dim=action_dim, configs=config)
         critic_net = TwinCritic(action_dim=action_dim, configs=config)
@@ -711,7 +736,7 @@ def single_run(config: dict):
                 ),
                 config["ENV_ID"],
                 eval_episodes=10,
-                Model=partial(Pixel_Actor_Discrete if config["PIXEL_BASED"] else MLP_Actor_Discrete, configs=config),
+                Model=partial(partial(Pixel_Actor_Discrete, cnn_type=config.get("CNN_TYPE", "nature")) if config["PIXEL_BASED"] else MLP_Actor_Discrete, configs=config),
                 seed=config["SEED"] + 42,  # use a different seed for evaluation
             )
             metrics[mod_label] = float(np.mean(jax.device_get(episodic_returns)))

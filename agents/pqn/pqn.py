@@ -26,6 +26,7 @@ from jaxtari.wrappers import (
 )
 from agents.pqn.pqn_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 
 
 def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=False):
@@ -74,21 +75,25 @@ def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=
 
 class QNetwork(nn.Module):
     action_dim: int
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))  # (batch, frames, H, W) -> (batch, H, W, frames)
-        x = x.astype(jnp.float32) / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(x, kernel_init=orthogonal(np.sqrt(2)), norm=lambda h: nn.LayerNorm()(h))
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))  # (batch, frames, H, W) -> (batch, H, W, frames)
+            x = x.astype(jnp.float32) / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
@@ -123,7 +128,7 @@ def single_run(config: dict):
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
     env_id = config["ENV_ID"]
     pixel_based = config["PIXEL_BASED"]
-    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel'}_{config['SEED']}"
+    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -164,7 +169,7 @@ def single_run(config: dict):
     minibatch_size = batch_size // num_minibatches
     scan_steps, num_chunks, steps_per_chunk = plan_chunks(total_timesteps, batch_size, config.get("SCAN_STEPS", 1000))
 
-    network = QNetwork(action_dim=action_dim) if pixel_based else MLP_QNetwork(action_dim=action_dim)
+    network = QNetwork(action_dim=action_dim, cnn_type=config.get("CNN_TYPE", "nature")) if pixel_based else MLP_QNetwork(action_dim=action_dim)
     total_grad_steps = scan_steps * num_chunks * update_epochs * num_minibatches
     lr = optax.linear_schedule(learning_rate, 0.0, total_grad_steps) if anneal_lr else learning_rate
     tx = optax.chain(optax.clip_by_global_norm(max_grad_norm), optax.radam(lr))
@@ -300,7 +305,7 @@ def single_run(config: dict):
                 ),
                 env_id,
                 eval_episodes=10,
-                Model=QNetwork if pixel_based else MLP_QNetwork,
+                Model=partial(QNetwork, cnn_type=config.get("CNN_TYPE", "nature")) if pixel_based else MLP_QNetwork,
                 seed=config["SEED"] + 42,  # use a different seed for evaluation
             )
             metrics[mod_label] = float(np.mean(jax.device_get(episodic_returns)))

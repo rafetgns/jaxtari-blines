@@ -19,6 +19,7 @@ from jaxtari.wrappers import NormalizeObservationWrapper, ObjectCentricWrapper, 
 from jaxtari import spaces
 from agents.ppo.ppo_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False):
@@ -67,46 +68,6 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
     return thunk
 
 
-class ImpalaResidualBlock(nn.Module):
-    channels: int
-
-    @nn.compact
-    def __call__(self, x):
-        inputs = x
-        x = nn.relu(x)
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        x = nn.relu(x)
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        return x + inputs
-
-
-class ImpalaConvSequence(nn.Module):
-    channels: int
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding="SAME")
-        x = ImpalaResidualBlock(self.channels)(x)
-        x = ImpalaResidualBlock(self.channels)(x)
-        return x
-
-
-class ImpalaCNN(nn.Module):
-    channels: tuple = (16, 32, 32)
-
-    @nn.compact
-    def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))       
-        x = x.astype(jnp.float32) / 255.0
-        for ch in self.channels:
-            x = ImpalaConvSequence(ch)(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        return x
-    
 
 class Network(nn.Module):
     cnn_type: str = "nature"
@@ -114,16 +75,17 @@ class Network(nn.Module):
     @nn.compact
     def __call__(self, x):
         if self.cnn_type == "impala":
-            return ImpalaCNN()(x)
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x / 255.0
-        x = nn.relu(nn.Conv(32, (8, 8), (4, 4), padding="VALID",
-                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
-        x = nn.relu(nn.Conv(64, (4, 4), (2, 2), padding="VALID",
-                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
-        x = nn.relu(nn.Conv(64, (3, 3), (1, 1), padding="VALID",
-                    kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
-        x = x.reshape((x.shape[0], -1))
+            x = impala_cnn(x, kernel_init=orthogonal(np.sqrt(2)))
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x / 255.0
+            x = nn.relu(nn.Conv(32, (8, 8), (4, 4), padding="VALID",
+                        kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
+            x = nn.relu(nn.Conv(64, (4, 4), (2, 2), padding="VALID",
+                        kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
+            x = nn.relu(nn.Conv(64, (3, 3), (1, 1), padding="VALID",
+                        kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
+            x = x.reshape((x.shape[0], -1))
         x = nn.relu(nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x))
         return x
 
@@ -183,7 +145,7 @@ def single_run(config: dict):
     pixel_based = config["PIXEL_BASED"]
     env_id = config["ENV_ID"]
 
-    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel'}_{config['SEED']}"
+    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
         entity=config.get("ENTITY", None),

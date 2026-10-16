@@ -26,6 +26,7 @@ from jaxtari.wrappers import (
 )
 from agents.c51.c51_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 
@@ -75,46 +76,6 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
     return thunk
 
 
-class ImpalaResidualBlock(nn.Module):
-    channels: int
-
-    @nn.compact
-    def __call__(self, x):
-        inputs = x
-        x = nn.relu(x)
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        x = nn.relu(x)
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        return x + inputs
-
-
-class ImpalaConvSequence(nn.Module):
-    channels: int
-
-    @nn.compact
-    def __call__(self, x):
-        x = nn.Conv(self.channels, kernel_size=(3, 3), padding="SAME")(x)
-        x = nn.max_pool(x, window_shape=(3, 3), strides=(2, 2), padding="SAME")
-        x = ImpalaResidualBlock(self.channels)(x)
-        x = ImpalaResidualBlock(self.channels)(x)
-        return x
-
-
-class ImpalaCNN(nn.Module):
-    channels: tuple = (16, 32, 32)
-
-    @nn.compact
-    def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))         
-        x = x.astype(jnp.float32) / 255.0
-        for ch in self.channels:
-            x = ImpalaConvSequence(ch)(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
-        x = nn.Dense(256)(x)
-        x = nn.relu(x)
-        return x
-
 
 class C51CNNNetwork(nn.Module):
     action_dim: int
@@ -124,7 +85,7 @@ class C51CNNNetwork(nn.Module):
     @nn.compact
     def __call__(self, x):
         if self.cnn_type == "impala":
-            x = ImpalaCNN()(x)
+            x = impala_cnn(x)
         else:
             x = jnp.transpose(x, (0, 2, 3, 1))
             x = x.astype(jnp.float32)
@@ -133,7 +94,7 @@ class C51CNNNetwork(nn.Module):
             x = nn.relu(nn.Conv(64, (4, 4), (2, 2), padding="VALID")(x))
             x = nn.relu(nn.Conv(64, (3, 3), (1, 1), padding="VALID")(x))
             x = x.reshape((x.shape[0], -1))
-            x = nn.relu(nn.Dense(512)(x))
+        x = nn.relu(nn.Dense(512)(x))
         x = nn.Dense(self.action_dim * self.n_atoms)(x)
         x = x.reshape((x.shape[0], self.action_dim, self.n_atoms))
         return nn.softmax(x, axis=-1)
@@ -172,7 +133,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel'}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),

@@ -24,6 +24,7 @@ from jaxtari.wrappers import (
 )
 from agents.iqn.iqn_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 
@@ -75,19 +76,23 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
 class QNetwork(nn.Module):
     action_dim: int
     embedding_dim: int = 64
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x, tau):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32)
-        x = x / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID")(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID")(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID")(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(x)
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32)
+            x = x / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID")(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID")(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID")(x)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         psi = nn.Dense(512)(x)
         psi = nn.relu(psi)
         i = jnp.arange(1, self.embedding_dim + 1, dtype=jnp.float32)
@@ -125,7 +130,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel'}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -172,7 +177,8 @@ def single_run(config: dict):
 
     key, q_key = jax.random.split(key, 2)
     embedding_dim = config.get("QUANTILE_EMBEDDING_DIM", 64)
-    Model = partial(QNetwork if config.get("PIXEL_BASED", True) else MLP_QNetwork, embedding_dim=embedding_dim)
+    Model = partial(QNetwork, cnn_type=config.get("CNN_TYPE", "nature")) if config.get("PIXEL_BASED", True) else MLP_QNetwork
+    Model = partial(Model, embedding_dim=embedding_dim)
     network = Model(action_dim=action_dim)
 
     dummy_obs = jnp.zeros((1, *obs_shape))

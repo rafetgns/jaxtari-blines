@@ -24,6 +24,7 @@ from jaxtari.wrappers import (
     PixelObsWrapper,
 )
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from agents.simba_pqn.simba_pqn_eval import evaluate
 
 
@@ -106,22 +107,26 @@ class SimBaQNetwork(nn.Module):
     hidden_dim: int = 512
     num_blocks: int = 2
     expansion_factor: int = 4
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32)
-        x = x / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(x, kernel_init=orthogonal(np.sqrt(2)), norm=lambda h: nn.LayerNorm()(h))
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32)
+            x = x / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
 
         return SimBaTail(self.action_dim, self.hidden_dim, self.num_blocks, self.expansion_factor)(x)
 
@@ -151,7 +156,7 @@ def single_run(config: dict):
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
     env_id = config["ENV_ID"]
     pixel_based = config["PIXEL_BASED"]
-    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel'}_{config['SEED']}"
+    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -186,7 +191,7 @@ def single_run(config: dict):
     simba_num_blocks = config.get("SIMBA_NUM_BLOCKS", 2)
     simba_expansion_factor = config.get("SIMBA_EXPANSION_FACTOR", 4)
     Network = partial(
-        SimBaQNetwork if pixel_based else SimBaMLP_QNetwork,
+        partial(SimBaQNetwork, cnn_type=config.get("CNN_TYPE", "nature")) if pixel_based else SimBaMLP_QNetwork,
         hidden_dim=simba_hidden_dim,
         num_blocks=simba_num_blocks,
         expansion_factor=simba_expansion_factor,

@@ -28,6 +28,7 @@ from jaxtari.wrappers import (
 )
 from agents.sac_cale.sac_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 
@@ -81,17 +82,22 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
 
 class CNNEncoder(nn.Module):
     """Shared encoder for pixel observations."""
+    cnn_type: str = "nature"
+
     @nn.compact
     def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32) / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(x, kernel_init=orthogonal(np.sqrt(2)))
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32) / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
         x = nn.relu(x)
         return x
@@ -164,7 +170,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel'}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -239,7 +245,7 @@ def single_run(config: dict):
     key, init_key = jax.random.split(key, 2)
     encoder_key, actor_key, qf1_key, qf2_key = jax.random.split(init_key, 4)
 
-    encoder_net = CNNEncoder() if config.get("PIXEL_BASED", True) else MLPEncoder()
+    encoder_net = CNNEncoder(cnn_type=config.get("CNN_TYPE", "nature")) if config.get("PIXEL_BASED", True) else MLPEncoder()
     actor_net = Actor(action_dim=action_dim)
     critic_net = SoftQNetwork()
 
@@ -485,7 +491,7 @@ def single_run(config: dict):
                 ),
                 config["ENV_ID"],
                 eval_episodes=10,
-                Model=(CNNEncoder if config["PIXEL_BASED"] else MLPEncoder, Actor),
+                Model=(partial(CNNEncoder, cnn_type=config.get("CNN_TYPE", "nature")) if config["PIXEL_BASED"] else MLPEncoder, Actor),
                 seed=config["SEED"] + 42,  # use a different seed for evaluation
             )
             metrics[mod_label] = float(np.mean(jax.device_get(episodic_returns)))

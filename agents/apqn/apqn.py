@@ -25,6 +25,7 @@ from jaxtari.wrappers import (
 )
 from agents.apqn.apqn_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 
@@ -75,22 +76,26 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
 
 class QNetwork(nn.Module):
     action_dim: int
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32)
-        x = x / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
-        x = nn.LayerNorm()(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(x, kernel_init=orthogonal(np.sqrt(2)), norm=lambda h: nn.LayerNorm()(h))
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32)
+            x = x / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
+            x = nn.LayerNorm()(x)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         x = nn.Dense(512, kernel_init=orthogonal(np.sqrt(2)), bias_init=constant(0.0))(x)
         x = nn.LayerNorm()(x)
         x = nn.relu(x)
@@ -128,7 +133,7 @@ def single_run(config: dict):
     if pixel_based and config["NUM_ENVS"] > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel'}_{config['SEED']}"
+    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -198,7 +203,7 @@ def single_run(config: dict):
         return next_obs.reshape(action.shape[0], *obs_shape), state, reward, next_done, info
 
     key, q_key = jax.random.split(key, 2)
-    network = QNetwork(action_dim=action_dim) if pixel_based else MLP_QNetwork(action_dim=action_dim)
+    network = QNetwork(action_dim=action_dim, cnn_type=config.get("CNN_TYPE", "nature")) if pixel_based else MLP_QNetwork(action_dim=action_dim)
     q_params = network.init(q_key, jnp.zeros((1, *obs_shape)))
 
     approx_num_iters = total_timesteps // (num_envs * num_steps_min)
@@ -374,7 +379,7 @@ def single_run(config: dict):
                 ),
                 env_id,
                 eval_episodes=10,
-                Model=QNetwork if pixel_based else MLP_QNetwork,
+                Model=partial(QNetwork, cnn_type=config.get("CNN_TYPE", "nature")) if pixel_based else MLP_QNetwork,
                 seed=config["SEED"] + 42,  # use a different seed for evaluation
             )
             metrics[mod_label] = float(np.mean(jax.device_get(episodic_returns)))

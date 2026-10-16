@@ -24,6 +24,7 @@ from jaxtari.wrappers import (
 )
 from agents.simba_sac.simba_sac_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
+from agents.networks import impala_cnn
 from rtpt import RTPT
 
 
@@ -105,18 +106,22 @@ class SimBa_Pixel_Actor_Discrete(nn.Module):
     hidden_dim: int = 128
     num_blocks: int = 1
     expansion_factor: int = 4
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x, key):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32) / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(x, kernel_init=nn.initializers.he_normal())
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32) / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         x = SimBaTrunk(self.hidden_dim, self.num_blocks, self.expansion_factor)(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         sample = jax.random.categorical(key, x)
@@ -129,18 +134,22 @@ class SimBa_Pixel_Critic(nn.Module):
     hidden_dim: int = 512
     num_blocks: int = 2
     expansion_factor: int = 4
+    cnn_type: str = "nature"
 
     @nn.compact
     def __call__(self, x):
-        x = jnp.transpose(x, (0, 2, 3, 1))
-        x = x.astype(jnp.float32) / 255.0
-        x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
-        x = nn.relu(x)
-        x = x.reshape((x.shape[0], -1))
+        if self.cnn_type == "impala":
+            x = impala_cnn(x, kernel_init=nn.initializers.he_normal())
+        else:
+            x = jnp.transpose(x, (0, 2, 3, 1))
+            x = x.astype(jnp.float32) / 255.0
+            x = nn.Conv(32, kernel_size=(8, 8), strides=(4, 4), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(4, 4), strides=(2, 2), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = nn.Conv(64, kernel_size=(3, 3), strides=(1, 1), padding="VALID", kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
+            x = nn.relu(x)
+            x = x.reshape((x.shape[0], -1))
         x = SimBaTrunk(self.hidden_dim, self.num_blocks, self.expansion_factor)(x)
         x = nn.Dense(self.action_dim, kernel_init=nn.initializers.he_normal(), bias_init=constant(0.0))(x)
         return x
@@ -192,7 +201,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.") 
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel'}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -266,8 +275,8 @@ def single_run(config: dict):
         expansion_factor=expansion_factor,
     )
     if config.get("PIXEL_BASED", True):
-        Actor = partial(SimBa_Pixel_Actor_Discrete, **actor_kwargs)
-        Critic = partial(SimBa_Pixel_Critic, **critic_kwargs)
+        Actor = partial(SimBa_Pixel_Actor_Discrete, cnn_type=config.get("CNN_TYPE", "nature"), **actor_kwargs)
+        Critic = partial(SimBa_Pixel_Critic, cnn_type=config.get("CNN_TYPE", "nature"), **critic_kwargs)
     else:
         Actor = partial(SimBa_MLP_Actor_Discrete, **actor_kwargs)
         Critic = partial(SimBa_MLP_Critic, **critic_kwargs)

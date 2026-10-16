@@ -27,5 +27,5 @@ EVAL_EVERY: 100 # measured in alg iterations, not env steps
 # whether to capture a video during eval
 CAPTURE_VIDEO: True
 
-# default cnn block for all pixel based runs, set to "impala" for impala style cnn
-CNN_TYPE: nature      
+# conv encoder for pixel-based runs: "nature" (Mnih et al., 2015) or "impala" (Espeholt et al., 2018); ignored for OC
+CNN_TYPE: nature
