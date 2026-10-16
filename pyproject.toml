@@ -11,8 +11,11 @@ dependencies = [
     "hydra-core>=1.3.2",
     "jax[cuda12]", # use "jax" if no cuda available
     "flashbax",
-    "scikit-learn", # agents/scobots/viper.py: decision-tree distillation
 ]
+
+[project.optional-dependencies]
+# agents/scobots/viper.py (decision-tree distillation): uv sync --extra viper
+viper = ["scikit-learn"]
 
 [tool.uv]
 override-dependencies = [

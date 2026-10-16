@@ -1,6 +1,8 @@
 # SCoBots' hyperparameters, scaled out to many parallel JAXtari envs.
 ALG: SCOBOTS
-EXP_NAME: scobots_tuned
+EXP_NAME: scobots
+
+PIXEL_BASED: False # concepts are computed from the object-centric observation
 
 REWARD_MODE: 0 # 0: env, 1: concept reward only ("human"), 2: both ("mixed")
 HIDDEN_DIMS: [64, 64]
@@ -20,3 +22,4 @@ ANNEAL_CLIP: True
 ENT_COEF: 0.01
 VF_COEF: 2.0
 MAX_GRAD_NORM: 0.5
+SCAN_STEPS: 1 # updates per jitted chunk (one wandb log per update)

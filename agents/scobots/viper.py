@@ -22,8 +22,8 @@ Credits
 
 Usage
 -----
-    uv run python -m agents.scobots.viper extract models/pong_scobots_tuned_mode0_1/*.model
-    uv run python -m agents.scobots.viper show models/pong_scobots_tuned_mode0_1/viper/best_+21.00.viper
+    uv run python -m agents.scobots.viper extract models/pong_scobots_oc_1/*.cleanrl_model
+    uv run python -m agents.scobots.viper show models/pong_scobots_oc_1/viper/best_+21.00.viper
     uv run python -m agents.scobots.viper show .../best_+21.00.viper --visualize --max-depth 3
 """
 

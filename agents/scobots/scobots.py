@@ -19,7 +19,7 @@ Credits
   selections (the paper's pruned focus files for pong, tennis, seaquest,
   freeway, kangaroo and skiing), the action pruning, the concept rewards for
   pong, kangaroo and skiing (scobi/focus.py), and the policy architecture and
-  hyperparameters (`config/alg/scobots_original.yaml`) follow that reference;
+  hyperparameters (`config/alg/scobots_oc_original.yaml`) follow that reference;
   this file is a from-scratch JAX re-implementation.
 * The PPO trainer is `agents/ppo/ppo.py` of this repository, itself adapted from
   CleanRL's `ppo_atari_envpool_xla_jax_scan.py` (https://github.com/vwxyzjn/cleanrl).
@@ -28,9 +28,9 @@ Credits
 
 Usage
 -----
-    uv run python main.py +alg=scobots_tuned ENV_ID=pong
-    uv run python main.py +alg=scobots_original ENV_ID=pong
-    uv run python main.py +alg=scobots_tuned ENV_ID=pong alg.REWARD_MODE=2
+    uv run python main.py +alg=scobots_oc_tuned ENV_ID=pong
+    uv run python main.py +alg=scobots_oc_original ENV_ID=pong
+    uv run python main.py +alg=scobots_oc_tuned ENV_ID=pong alg.REWARD_MODE=2
     uv run python -m agents.scobots.scobots --describe pong   # the concept vector
     uv run python -m agents.scobots.scobots --selftest        # step all 15 games
 """
@@ -38,8 +38,6 @@ Usage
 import os
 import random
 import re
-import shutil
-import tempfile
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -57,11 +55,12 @@ from flax.linen.initializers import constant, orthogonal
 from flax.training.train_state import TrainState
 from rtpt import RTPT
 
-import jaxatari
-from jaxatari import spaces
-from jaxatari.environment import JAXAtariAction
-from jaxatari.wrappers import AtariState, AtariWrapper, JaxatariWrapper, LogWrapper
+import jaxtari
+from jaxtari import spaces
+from jaxtari.environment import JaxtariAction
+from jaxtari.wrappers import AtariState, AtariWrapper, JaxtariWrapper, LogWrapper
 
+from agents.run_utils import eval_mod_configs, plan_chunks
 from agents.scobots.scobots_eval import evaluate
 
 
@@ -87,9 +86,7 @@ GAME_OBJECTS: dict[str, dict[str, ObsField]] = {
     "beamrider": {"Player1": ObsField("player", None), **_rows("Enemy", "white_ufo", 2),
                   "Mothership1": ObsField("mothership", None)},
     "breakout": {"Player1": ObsField("player", None), "Ball1": ObsField("ball", None)},
-    # Slot 0 is the car nearest to the player; empty slots have x = -1. The
-    # player's car is not part of the observation (see EXTRA_OBJECTS).
-    "enduro": {"Player1": ObsField("player", None), **_rows("Car", "enemy_positions", 4)},
+    "enduro": {"Player1": ObsField("player", None), **_rows("Car", "enemies", 4)},
     "freeway": {"Chicken1": ObsField("chicken", None), **_rows("Car", "car", 10)},
     "frostbite": {"Bailey1": ObsField("bailey", None), "Bear1": ObsField("bear", None),
                   **_rows("Obstacle", "obstacles", 4)},
@@ -104,8 +101,7 @@ GAME_OBJECTS: dict[str, dict[str, ObsField]] = {
     "montezumarevenge": {"Player1": ObsField("player", None), **_rows("Enemy", "enemies", 3),
                          **_rows("Item", "items", 2), **_rows("Platform", "platforms", 2),
                          "Rope1": ObsField("ropes", 0), "Door1": ObsField("doors", 0)},
-    "mspacman": {"Player1": ObsField("player_position", None),
-                 **_rows("Ghost", "ghost_positions", 4)},
+    "mspacman": {"Player1": ObsField("player", None), **_rows("Ghost", "ghosts", 4)},
     "phoenix": {"Player1": ObsField("player", None), **_rows("Enemy", "enemies", 8),
                 "Boss1": ObsField("boss", None)},
     "pong": {"Player1": ObsField("player", None), "Enemy1": ObsField("enemy", None),
@@ -129,13 +125,11 @@ GAME_OBJECTS: dict[str, dict[str, ObsField]] = {
 
 # Objects SCoBots sees (OCAtari reads them from RAM) that a JAXtari observation
 # does not give as positions, built from the observation or the game state:
-# * enduro: the player's car is not in the observation; read it from the state.
 # * seaquest: oxygen is a number (0-64) in the observation. The original agent
 #   reads it through OCAtari's OxygenBarDepleted object, whose x is the right
 #   edge of the filled bar; OxygenBar1 is given that position here. The bar is
 #   drawn at (49, 170), 63 px wide when full, in both JAXtari and OCAtari.
 EXTRA_OBJECTS: dict[str, Callable[[Any, Any], dict[str, jax.Array]]] = {
-    "enduro": lambda obs, s: {"player": jnp.stack([s.player_x, s.player_y]).astype(jnp.float32)},
     "seaquest": lambda obs, s: {"oxygen_bar": jnp.stack(
         [49.0 + jnp.asarray(obs.oxygen_level, jnp.float32) * 63.0 / 64.0, jnp.float32(170.0)])},
 }
@@ -236,7 +230,7 @@ CONCEPTS: dict[str, Concept] = {
 
 class Focus(NamedTuple):
     features: tuple[tuple[str, tuple[str, ...]], ...]  # (concept, objects), in vector order
-    actions: tuple[str, ...]                           # JAXAtariAction names the agent may use
+    actions: tuple[str, ...]                           # JaxtariAction names the agent may use
 
 
 def _focus(positions: str, histories: str, functions: str, actions: str) -> Focus:
@@ -400,14 +394,13 @@ class RewardAux:
     kangaroo_best_y: jax.Array
     skiing_last_dist: jax.Array
     skiing_in_gate: jax.Array
-    pacman_frightened_timer: jax.Array
     freeway_best_y: jax.Array
     initialized: jax.Array
 
 
 def make_reward_aux() -> RewardAux:
     zero = jnp.float32(0.0)
-    return RewardAux(zero, zero, jnp.bool_(False), zero, zero, jnp.bool_(False))
+    return RewardAux(zero, zero, jnp.bool_(False), zero, jnp.bool_(False))
 
 
 def _reward_pong(curr, prev, aux):
@@ -519,51 +512,39 @@ def _reward_freeway(curr, prev, aux):
     return progress + jnp.where(hit, -0.3, 0.0), aux
 
 
-# JAXtari's MsPacmanConstants.FRIGHTENED_DURATION is 13 * 20 frames; the reward
-# is computed once per agent step of 4 frames.
-_PACMAN_FRIGHTENED_STEPS = 13 * 20 / 4
+# GhostMode values in JAXtari's ms. pac-man: FRIGHTENED = 3, BLINKING = 4 (both edible)
+_PACMAN_EDIBLE_MODES = (3, 4)
+
+
+def _pacman_xy(objs):
+    return jnp.stack([jnp.asarray(objs.x, jnp.float32), jnp.asarray(objs.y, jnp.float32)], -1)
 
 
 def _pacman_ghost_dist(obs):
-    player = jnp.asarray(obs.player_position, jnp.float32)
-    return jnp.min(jnp.linalg.norm(jnp.asarray(obs.ghost_positions, jnp.float32) - player, axis=-1))
+    """Distance from the player to the nearest active ghost (+inf if there is none)."""
+    dists = jnp.linalg.norm(_pacman_xy(obs.ghosts) - _pacman_xy(obs.player), axis=-1)
+    return jnp.min(jnp.where(jnp.asarray(obs.ghosts.active, bool), dists, jnp.inf))
 
 
 def _pacman_pellet_dist(obs):
-    """Distance to the nearest remaining pellet (+inf once the board is clear).
-
-    Inverts the grid-cell -> pixel mapping of JAXtari's MsPacmanRenderer
-    (18x14 grid, split at x = 76 for the tunnel gap).
-    """
-    gx = jnp.arange(obs.pellets.shape[0], dtype=jnp.float32)[:, None]
-    gy = jnp.arange(obs.pellets.shape[1], dtype=jnp.float32)[None, :]
-    px = jnp.where(gx < 9, gx * 8 + 10, gx * 8 + 14)
-    py = gy * 12 + 9
-    player = jnp.asarray(obs.player_position, jnp.float32)
-    dists = jnp.sqrt((px - player[0]) ** 2 + (py - player[1]) ** 2)
-    return jnp.min(jnp.where(jnp.asarray(obs.pellets, bool), dists, jnp.inf))
+    """Distance to the nearest remaining pellet (+inf once the board is clear)."""
+    dists = jnp.linalg.norm(_pacman_xy(obs.pellets) - _pacman_xy(obs.player), axis=-1)
+    return jnp.min(jnp.where(jnp.asarray(obs.pellets.active, bool), dists, jnp.inf))
 
 
 def _reward_pacman(curr, prev, aux):
-    """Flee the nearest ghost, chase it while powered up, and keep eating.
-
-    The observation has no frightened flag, so it is approximated: a power
-    pellet disappearing starts a _PACMAN_FRIGHTENED_STEPS window.
-    """
+    """Flee the nearest ghost, chase it while the ghosts are edible, and keep eating."""
     curr, prev = curr.obs, prev.obs
     ghost_delta = _pacman_ghost_dist(curr) - _pacman_ghost_dist(prev)
-    ghost_delta = jnp.where(jnp.abs(ghost_delta) < 20.0, ghost_delta, 0.0)  # tunnel / jail jumps
-
-    ate_power = jnp.any(jnp.asarray(prev.power_pellets, bool) & ~jnp.asarray(curr.power_pellets, bool))
-    timer = jnp.where(ate_power, _PACMAN_FRIGHTENED_STEPS,
-                      jnp.maximum(jnp.where(aux.initialized, aux.pacman_frightened_timer, 0.0) - 1.0, 0.0))
-    ghost_reward = 0.02 * jnp.where(timer > 0.0, -ghost_delta, ghost_delta)
+    # tunnel / jail jumps, and steps without an active ghost
+    ghost_delta = jnp.where(jnp.isfinite(ghost_delta) & (jnp.abs(ghost_delta) < 20.0), ghost_delta, 0.0)
+    edible = jnp.any(jnp.isin(jnp.asarray(curr.ghosts.state), jnp.asarray(_PACMAN_EDIBLE_MODES))
+                     & jnp.asarray(curr.ghosts.active, bool))
+    ghost_reward = 0.02 * jnp.where(edible, -ghost_delta, ghost_delta)
 
     pellet_delta = _pacman_pellet_dist(prev) - _pacman_pellet_dist(curr)
     valid = jnp.isfinite(pellet_delta) & (jnp.abs(pellet_delta) < 30.0)  # level refill / empty board
     pellet_reward = 0.02 * jnp.where(valid, pellet_delta, 0.0)
-
-    aux = aux.replace(pacman_frightened_timer=timer, initialized=jnp.bool_(True))
     return ghost_reward + pellet_reward, aux
 
 
@@ -578,7 +559,7 @@ CONCEPT_REWARDS: dict[str, Callable] = {
 
 
 # ===========================================================================
-# The wrapper: a sibling of jaxatari's ObjectCentricWrapper
+# The wrapper: a sibling of jaxtari's ObjectCentricWrapper
 # ===========================================================================
 
 
@@ -589,7 +570,7 @@ class ScobotState:
     aux: RewardAux
 
 
-class ScobotWrapper(JaxatariWrapper):
+class ScobotWrapper(JaxtariWrapper):
     """Emits the SCoBots concept vector instead of the flattened object state.
 
     Apply directly after `AtariWrapper`. Frame skipping, reward clipping and
@@ -621,8 +602,8 @@ class ScobotWrapper(JaxatariWrapper):
         # version, i.e. the button is pressed but does nothing.
         def index(name):
             for candidate in (name, name.replace("FIRE", "") or "NOOP", "NOOP"):
-                if int(getattr(JAXAtariAction, candidate)) in table:
-                    return table.index(int(getattr(JAXAtariAction, candidate)))
+                if int(getattr(JaxtariAction, candidate)) in table:
+                    return table.index(int(getattr(JaxtariAction, candidate)))
             raise ValueError(f"{game}: no action in {table} can stand in for {name}")
 
         self.action_names = FOCUS[game].actions
@@ -696,12 +677,12 @@ class ScobotWrapper(JaxatariWrapper):
 
 
 def make_env(env_id, mods=(), reward_mode=0, eval=False):
-    mods = list(mods) or None
+    mods = list(mods or []) or None
     if not eval and mods:
         print(f"[WARNING] Training on mods {mods}!")
 
     def thunk():
-        env = jaxatari.make(env_id, mods=mods)
+        env = jaxtari.make(env_id, mods=mods)
         env = AtariWrapper(
             env,
             sticky_actions=0.0,
@@ -763,43 +744,64 @@ class Storage:
 # ===========================================================================
 
 
-def single_run(config):
+def single_run(config: dict):
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
-    config["TRAIN_MODS"] = tuple(config["TRAIN_MODS"])
-    config["EVAL_MODS"] = tuple(config["EVAL_MODS"])
-    config["BATCH_SIZE"] = int(config["NUM_ENVS"] * config["NUM_STEPS"])
-    config["MINIBATCH_SIZE"] = int(config["BATCH_SIZE"] // config["NUM_MINIBATCHES"])
-    config["NUM_ITERATIONS"] = int(config["TOTAL_TIMESTEPS"] // config["BATCH_SIZE"])
-    reward_mode = int(config["REWARD_MODE"])
+    env_id = config["ENV_ID"]
+    reward_mode = int(config.get("REWARD_MODE", 0))
 
-    run_name = f'{config["ENV_ID"]}_{config["EXP_NAME"]}_mode{reward_mode}_{config["SEED"]}'
-    wandb.init(project=config["PROJECT"], entity=config["ENTITY"], config=config,
-               name=run_name, save_code=True)
+    # concepts are object-centric only; reward mode 0 keeps the usual name
+    run_name = f"{env_id}_{config['EXP_NAME']}_oc{f'_mode{reward_mode}' if reward_mode else ''}_{config['SEED']}"
+    wandb.init(
+        project=config.get("PROJECT", "jaxtari-blines"),
+        entity=config.get("ENTITY", None),
+        config=config,
+        name=run_name,
+        save_code=True,
+        mode=config.get("WANDB_MODE", "online"),
+    )
+    wandb.define_metric("*", step_metric="charts/global_step")
 
+    # do not modify the seeding
     random.seed(config["SEED"])
     np.random.seed(config["SEED"])
     key = jax.random.PRNGKey(config["SEED"])
-    key, actor_key, critic_key = jax.random.split(key, 3)
+
+    num_envs = config["NUM_ENVS"]
+    num_steps = config["NUM_STEPS"]
+    num_minibatches = config["NUM_MINIBATCHES"]
+    update_epochs = config["UPDATE_EPOCHS"]
+    hidden_dims = tuple(config["HIDDEN_DIMS"])
 
     env_fn = partial(make_env, reward_mode=reward_mode)
-    env = env_fn(config["ENV_ID"], mods=config["TRAIN_MODS"])()
+    env = env_fn(env_id, mods=list(config.get("TRAIN_MODS") or []))()
     n_actions = env.action_space().n
-    print(f'SCoBots on {config["ENV_ID"]}: {env.n_features} concepts, '
-          f'{n_actions} actions {env.action_names}, reward mode {reward_mode}')
+    print(f"SCoBots on {env_id}: {env.n_features} concepts, "
+          f"{n_actions} actions {env.action_names}, reward mode {reward_mode}")
 
-    @jax.jit
-    def vmap_reset(keys):
-        return jax.vmap(env.reset)(keys)
+    batch_size = num_envs * num_steps
+    scan_steps, num_chunks, steps_per_chunk = plan_chunks(config["TOTAL_TIMESTEPS"], batch_size, config.get("SCAN_STEPS", 1))
+    num_updates = scan_steps * num_chunks
 
-    @jax.jit
-    def vmap_step(state, action):
+    def reset_envs(rng):
+        return jax.vmap(env.reset)(rng)
+
+    def step_envs(state, action):
         obs, state, reward, terminated, truncated, info = jax.vmap(env.step)(state, action)
         return obs, state, reward, jnp.logical_or(terminated, truncated), info
 
-    def anneal(count):  # 1 -> 1/NUM_ITERATIONS, one step per iteration
-        return 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / config["NUM_ITERATIONS"]
+    def anneal(update):
+        """1 at the first update, 1/num_updates at the last (SB3's linear schedule)."""
+        return 1.0 - update / num_updates
 
-    actor, critic = make_actor_critic(config["HIDDEN_DIMS"], n_actions)
+    def linear_schedule(count):
+        # one update contains NUM_MINIBATCHES * UPDATE_EPOCHS gradient steps
+        return config["LEARNING_RATE"] * anneal(count // (num_minibatches * update_epochs))
+
+    actor, critic = make_actor_critic(hidden_dims, n_actions)
+
+    # same root split as dqn/c51/pqn, so env resets for a given seed match across agents
+    key, init_key = jax.random.split(key, 2)
+    actor_key, critic_key = jax.random.split(init_key, 2)
     dummy_obs = jnp.zeros((1, env.n_features))
     agent_state = TrainState.create(
         apply_fn=None,
@@ -807,48 +809,30 @@ def single_run(config):
         tx=optax.chain(
             optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
             optax.inject_hyperparams(optax.adam)(
-                learning_rate=(lambda c: config["LEARNING_RATE"] * anneal(c))
-                if config["ANNEAL_LR"] else config["LEARNING_RATE"],
-                eps=1e-5,
+                learning_rate=linear_schedule if config["ANNEAL_LR"] else config["LEARNING_RATE"], eps=1e-5
             ),
         ),
     )
 
-    @jax.jit
-    def get_action_and_value(agent_state: TrainState, next_obs, key):
-        logits = actor.apply(agent_state.params.actor_params, next_obs)
+    def get_action_and_value(params, obs, key):
+        """sample action, calculate value and logprob"""
+        logits = actor.apply(params.actor_params, obs)
         # sample action: Gumbel-max trick
         key, subkey = jax.random.split(key)
         u = jax.random.uniform(subkey, shape=logits.shape)
         action = jnp.argmax(logits - jnp.log(-jnp.log(u)), axis=1)
         logprob = jax.nn.log_softmax(logits)[jnp.arange(action.shape[0]), action]
-        value = critic.apply(agent_state.params.critic_params, next_obs)
+        value = critic.apply(params.critic_params, obs)
         return action, logprob, value.squeeze(1), key
 
-    def get_action_and_value2(params: AgentParams, x, action):
+    def get_action_and_value2(params, x, action):
+        """calculate value, logprob of supplied `action`, and entropy"""
         logits = actor.apply(params.actor_params, x)
         logprob = jax.nn.log_softmax(logits)[jnp.arange(action.shape[0]), action]
         logits = logits - jax.scipy.special.logsumexp(logits, axis=-1, keepdims=True)
         logits = logits.clip(min=jnp.finfo(logits.dtype).min)
         entropy = -(logits * jax.nn.softmax(logits)).sum(-1)
         return logprob, entropy, critic.apply(params.critic_params, x).squeeze(-1)
-
-    def compute_gae_once(advantages, inp):
-        nextdone, nextvalues, curvalues, reward = inp
-        nextnonterminal = 1.0 - nextdone
-        delta = reward + config["GAMMA"] * nextvalues * nextnonterminal - curvalues
-        advantages = delta + config["GAMMA"] * config["GAE_LAMBDA"] * nextnonterminal * advantages
-        return advantages, advantages
-
-    @jax.jit
-    def compute_gae(agent_state: TrainState, next_obs, next_done, storage: Storage):
-        next_value = critic.apply(agent_state.params.critic_params, next_obs).squeeze(-1)
-        dones = jnp.concatenate([storage.dones, next_done[None, :]], axis=0)
-        values = jnp.concatenate([storage.values, next_value[None, :]], axis=0)
-        _, advantages = jax.lax.scan(
-            compute_gae_once, jnp.zeros((config["NUM_ENVS"],)),
-            (dones[1:], values[1:], values[:-1], storage.rewards), reverse=True)
-        return storage.replace(advantages=advantages, returns=advantages + storage.values)
 
     def ppo_loss(params, x, a, logp, mb_advantages, mb_returns, clip_coef):
         newlogprob, entropy, newvalue = get_action_and_value2(params, x, a)
@@ -868,139 +852,166 @@ def single_run(config):
 
     ppo_loss_grad_fn = jax.value_and_grad(ppo_loss, has_aux=True)
 
-    @jax.jit
-    def update_ppo(agent_state: TrainState, storage: Storage, key, clip_coef):
+    obs, env_state = reset_envs(jax.random.split(key, num_envs))
+    carry = (
+        agent_state,
+        env_state,
+        obs,
+        jnp.zeros(num_envs, dtype=jnp.bool_),  # done flags of the last step
+        key,
+        jnp.array(0, dtype=jnp.int32),  # env steps taken
+    )
+
+    def ppo_update(carry):
+        """One rollout of num_steps per env, GAE, and update_epochs of minibatch SGD."""
+        agent_state, env_state, obs, last_done, key, global_step = carry
+
+        def rollout_step(c, _):
+            env_state, last_obs, last_done, key = c
+            action, logprob, value, key = get_action_and_value(agent_state.params, last_obs, key)
+            next_obs, next_state, reward, next_done, info = step_envs(env_state, action)
+            storage = Storage(
+                obs=last_obs,
+                actions=action,
+                logprobs=logprob,
+                dones=last_done,
+                values=value,
+                rewards=reward,
+                returns=jnp.zeros_like(reward),
+                advantages=jnp.zeros_like(reward),
+            )
+            return (next_state, next_obs, next_done, key), (storage, info)
+
+        (env_state, next_obs, next_done, key), (storage, infos) = jax.lax.scan(
+            rollout_step, (env_state, obs, last_done, key), None, length=num_steps
+        )
+
+        # GAE, computed backwards through the rollout
+        next_value = critic.apply(agent_state.params.critic_params, next_obs).squeeze(1)
+        dones = jnp.concatenate([storage.dones, next_done[None, :]], axis=0).astype(jnp.float32)
+        values = jnp.concatenate([storage.values, next_value[None, :]], axis=0)
+
+        def gae_step(advantages, inp):
+            nextdone, nextvalues, curvalues, reward = inp
+            nextnonterminal = 1.0 - nextdone
+            delta = reward + config["GAMMA"] * nextvalues * nextnonterminal - curvalues
+            advantages = delta + config["GAMMA"] * config["GAE_LAMBDA"] * nextnonterminal * advantages
+            return advantages, advantages
+
+        _, advantages = jax.lax.scan(
+            gae_step, jnp.zeros((num_envs,)), (dones[1:], values[1:], values[:-1], storage.rewards), reverse=True
+        )
+        storage = storage.replace(advantages=advantages, returns=advantages + storage.values)
+
+        # SCoBots (SB3) anneals the clip range with the learning rate
+        clip_coef = config["CLIP_COEF"] * (anneal(global_step // batch_size) if config["ANNEAL_CLIP"] else 1.0)
+
         def update_epoch(carry, _):
             agent_state, key = carry
-            key, subkey = jax.random.split(key)
-
+            key, perm_key = jax.random.split(key)
+            flat = jax.tree.map(lambda x: x.reshape((-1,) + x.shape[2:]), storage)
             # taken from: https://github.com/google/brax/blob/main/brax/training/agents/ppo/train.py
-            def convert_data(x: jnp.ndarray):
-                x = jax.random.permutation(subkey, x.reshape((-1,) + x.shape[2:]))
-                return jnp.reshape(x, (config["NUM_MINIBATCHES"], -1) + x.shape[1:])
+            shuffled = jax.tree.map(
+                lambda x: jnp.reshape(jax.random.permutation(perm_key, x), (num_minibatches, -1) + x.shape[1:]),
+                flat,
+            )
 
             def update_minibatch(agent_state, mb):
-                (loss, aux), grads = ppo_loss_grad_fn(
-                    agent_state.params, mb.obs, mb.actions, mb.logprobs, mb.advantages,
-                    mb.returns, clip_coef)
-                return agent_state.apply_gradients(grads=grads), (loss, *aux)
+                (loss, (pg_loss, v_loss, entropy_loss, approx_kl)), grads = ppo_loss_grad_fn(
+                    agent_state.params, mb.obs, mb.actions, mb.logprobs, mb.advantages, mb.returns, clip_coef
+                )
+                agent_state = agent_state.apply_gradients(grads=grads)
+                return agent_state, (loss, pg_loss, v_loss, entropy_loss, approx_kl)
 
-            agent_state, losses = jax.lax.scan(
-                update_minibatch, agent_state, jax.tree.map(convert_data, storage))
+            agent_state, losses = jax.lax.scan(update_minibatch, agent_state, shuffled)
             return (agent_state, key), losses
 
-        (agent_state, key), losses = jax.lax.scan(
-            update_epoch, (agent_state, key), (), length=config["UPDATE_EPOCHS"])
-        return agent_state, losses, key
+        (agent_state, key), losses = jax.lax.scan(update_epoch, (agent_state, key), None, length=update_epochs)
+        losses = jax.tree.map(lambda x: x[-1, -1], losses)
+        learning_rate = agent_state.opt_state[1].hyperparams["learning_rate"]
 
-    def save_and_eval(iteration):
-        # evaluate() loads from disk, so without SAVE_PATH the model goes to a temp dir.
-        save_dir = (os.path.join(config["SAVE_PATH"], run_name) if config["SAVE_PATH"]
-                    else tempfile.mkdtemp())
-        model_path = os.path.join(save_dir, f'{config["EXP_NAME"]}_{iteration}_{time.time()}.model')
-        os.makedirs(save_dir, exist_ok=True)
-        with open(model_path, "wb") as f:
-            f.write(flax.serialization.to_bytes(
-                [config, [agent_state.params.actor_params, agent_state.params.critic_params]]))
-        if config["SAVE_PATH"]:
+        new_carry = (agent_state, env_state, next_obs, next_done, key, global_step + batch_size)
+        return new_carry, (infos, losses, learning_rate, clip_coef)
+
+    def save_and_eval(params, step_count):
+        if config.get("SAVE_PATH") is not None:
+            save_dir = os.path.join(config["SAVE_PATH"], run_name)
+            os.makedirs(save_dir, exist_ok=True)
+            model_path = os.path.join(save_dir, f'{config["EXP_NAME"]}_{step_count}_{int(time.time())}.cleanrl_model')
+            with open(model_path, "wb") as f:
+                # [config, [actor, critic]]: the layout scobots_eval.load_model (and viper.py) reads
+                f.write(flax.serialization.to_bytes([config, [params.actor_params, params.critic_params]]))
             print(f"model saved to {model_path}")
 
-        # evaluate across all mods (and default train env)
-        eval_configs = [((), "default")]
-        for mod in config["EVAL_MODS"] or config["TRAIN_MODS"]:
-            mods = (mod,) if isinstance(mod, str) else tuple(mod)
-            eval_configs.append((mods, "_".join(mods)))
-
+        print(f"running evaluation at step {step_count}...")
         metrics = {}
-        for mods, label in eval_configs:
-            print(f"Evaluating on {label} ...")
+        for mods_cfg, mod_label in eval_mod_configs(config):
+            # the eval env scores the game itself: unclipped and without the concept reward
             episodic_returns, env_states = evaluate(
-                model_path, partial(env_fn, mods=mods, eval=True), config["ENV_ID"],
-                eval_episodes=10, Model=MLP, seed=config["SEED"] + 42)
-            metrics[label] = float(np.mean(jax.device_get(episodic_returns)))
-            wandb.log({f"eval/episodic_return_{label}": metrics[label]}, step=iteration)
+                params,
+                partial(env_fn, mods=mods_cfg, eval=True),
+                env_id,
+                eval_episodes=10,
+                Model=partial(MLP, hidden_dims, out_scale=0.01),
+                seed=config["SEED"] + 42,  # use a different seed for evaluation
+            )
+            metrics[mod_label] = float(np.mean(jax.device_get(episodic_returns)))
+            wandb.log({f"eval/episodic_return_{mod_label}": metrics[mod_label]}, step=step_count)
 
-            if config["CAPTURE_VIDEO"]:
-                renderer = jaxatari.make(config["ENV_ID"], mods=list(mods) or None).renderer
-                frames = jnp.transpose(jax.vmap(renderer.render)(env_states), (0, 3, 1, 2))
-                wandb.log({f"eval/video_{label}": wandb.Video(np.array(frames), fps=30, format="mp4")},
-                          step=iteration)
-                print(f"Video (eval) logged to wandb with {frames.shape[0]} frames.")
-        if not config["SAVE_PATH"]:
-            shutil.rmtree(save_dir, ignore_errors=True)
+            if config.get("CAPTURE_VIDEO", False):
+                # Instantiate a clean renderer immune to the training env's downscaling
+                clean_renderer = jaxtari.make(env_id, mods=mods_cfg or None).renderer
+                frames = jnp.transpose(jax.vmap(clean_renderer.render)(env_states), (0, 3, 1, 2))
+                video = wandb.Video(np.array(frames), fps=30, format="mp4")
+                wandb.log({f"eval/video_{mod_label}": video}, step=step_count)
+                print(f"Video (eval) logged to wandb with {frames.shape[0]} frames ({mod_label}).")
         return metrics
 
-    key, reset_key = jax.random.split(key)
-    global_step = 0
-    next_obs, env_state = vmap_reset(jax.random.split(reset_key, config["NUM_ENVS"]))
-    next_done = jnp.zeros(config["NUM_ENVS"], dtype=jnp.bool_)
+    def train_chunk(carry):
+        return jax.lax.scan(lambda c, _: ppo_update(c), carry, None, length=scan_steps)
 
-    # based on https://github.com/google/evojax/blob/main/evojax/sim_mgr.py
-    def step_once(carry, _):
-        agent_state, obs, done, key, env_state = carry
-        action, logprob, value, key = get_action_and_value(agent_state, obs, key)
-        next_obs, env_state, reward, next_done, info = vmap_step(env_state, action)
-        storage = Storage(obs=obs, actions=action, logprobs=logprob, dones=done, values=value,
-                          rewards=reward, returns=jnp.zeros_like(reward),
-                          advantages=jnp.zeros_like(reward))
-        return (agent_state, next_obs, next_done, key, env_state), (storage, info)
+    print("[scobots] start compile...")
+    compile_start = time.perf_counter()
+    compiled = jax.jit(train_chunk, donate_argnums=(0,)).lower(carry).compile()
+    print(f"[scobots] compilation time: {time.perf_counter() - compile_start:.2f}s")
 
-    @jax.jit
-    def rollout(agent_state, next_obs, next_done, key, env_state):
-        (agent_state, next_obs, next_done, key, env_state), (storage, info) = jax.lax.scan(
-            step_once, (agent_state, next_obs, next_done, key, env_state), (), config["NUM_STEPS"])
-        return agent_state, next_obs, next_done, storage, key, env_state, info
-
-    rtpt = RTPT(name_initials=config["NAME_INITIALS"], experiment_name=run_name,
-                max_iterations=config["NUM_ITERATIONS"])
+    rtpt = RTPT(name_initials=config["NAME_INITIALS"], experiment_name=run_name, max_iterations=num_chunks)
     rtpt.start()
-    start_time = time.time()
-    compile_time = None
-    for iteration in range(1, config["NUM_ITERATIONS"] + 1):
+    run_time = time.perf_counter()
+    print(f"[scobots] starting training: {num_chunks} chunks x {steps_per_chunk} env steps")
+    for chunk in range(num_chunks):
         rtpt.step()
-        if config["EVAL_DURING_TRAIN"] and iteration % config["EVAL_EVERY"] == 0:
-            save_and_eval(iteration)
+        if config["EVAL_DURING_TRAIN"] and chunk > 0 and chunk % config["EVAL_EVERY"] == 0:
+            save_and_eval(carry[0].params, int(carry[-1]))
 
-        iteration_time_start = time.time()
-        agent_state, next_obs, next_done, storage, key, env_state, info = rollout(
-            agent_state, next_obs, next_done, key, env_state)
-        global_step += config["NUM_STEPS"] * config["NUM_ENVS"]
-        storage = compute_gae(agent_state, next_obs, next_done, storage)
-        # SCoBots (SB3) anneals the clip range with the learning rate.
-        clip_coef = config["CLIP_COEF"] * (anneal((iteration - 1) * config["NUM_MINIBATCHES"]
-                                                  * config["UPDATE_EPOCHS"])
-                                           if config["ANNEAL_CLIP"] else 1.0)
-        agent_state, (loss, pg_loss, v_loss, entropy_loss, approx_kl), key = update_ppo(
-            agent_state, storage, key, clip_coef)
-        if compile_time is None:
-            compile_time = time.time()
-            print(f"Compile + first iteration time: {compile_time - start_time:.2f} seconds.")
-
-        wandb.log({
-            "charts/avg_episodic_return": info["returned_episode_returns"].mean(),
-            "charts/avg_episodic_length": info["returned_episode_lengths"].mean(),
-            "charts/learning_rate": agent_state.opt_state[1].hyperparams["learning_rate"].item(),
-            "charts/clip_coef": clip_coef,
-            "losses/value_loss": v_loss[-1, -1].item(),
-            "losses/policy_loss": pg_loss[-1, -1].item(),
-            "losses/entropy": entropy_loss[-1, -1].item(),
-            "losses/approx_kl": approx_kl[-1, -1].item(),
-            "losses/loss": loss[-1, -1].item(),
-            "charts/SPS": int(global_step / (time.time() - start_time)),
-            "charts/SPS_update": int(config["BATCH_SIZE"] / (time.time() - iteration_time_start)),
-            "charts/time": time.time() - start_time,
+        chunk_start = time.perf_counter()
+        carry, (infos, (loss, pg_loss, v_loss, entropy_loss, approx_kl), learning_rate, clip_coef) = compiled(carry)
+        global_step = int(carry[-1])
+        metrics = {
+            "charts/avg_episodic_return": float(infos["returned_episode_returns"][-1].mean()),
+            "charts/avg_episodic_length": float(infos["returned_episode_lengths"][-1].mean()),
+            "charts/learning_rate": learning_rate[-1].item(),
+            "charts/clip_coef": clip_coef[-1].item(),
+            "losses/value_loss": v_loss[-1].item(),
+            "losses/policy_loss": pg_loss[-1].item(),
+            "losses/entropy": entropy_loss[-1].item(),
+            "losses/approx_kl": approx_kl[-1].item(),
+            "losses/loss": loss[-1].item(),
+            "charts/SPS": int(global_step / (time.perf_counter() - run_time)),
+            "charts/SPS_update": int(steps_per_chunk / (time.perf_counter() - chunk_start)),
+            "charts/time": time.perf_counter() - run_time,
             "charts/global_step": global_step,
-        }, step=iteration)
+        }
+        wandb.log(metrics, step=global_step)
+        print(
+            f"[scobots] chunk {chunk + 1}/{num_chunks} | global_step {global_step} | "
+            f"avg_return {metrics['charts/avg_episodic_return']:.2f} | "
+            f"avg_length {metrics['charts/avg_episodic_length']:.2f} | "
+            f"loss {metrics['losses/loss']:.4f} | entropy {metrics['losses/entropy']:.4f} | "
+            f"SPS {metrics['charts/SPS']}"
+        )
 
-    end_time = time.time()
-    print("Training done.")
-    if compile_time is not None:
-        print(f"Run time after first iteration: {end_time - compile_time:.2f} seconds.")
-    print(f"Total train time: {end_time - start_time:.2f} seconds / {(end_time - start_time) / 60:.2f} minutes.")
-
-    print("Evaluating final model ...")
-    eval_metrics = save_and_eval(config["NUM_ITERATIONS"] + 1)
-    print("Done.")
+    eval_metrics = save_and_eval(carry[0].params, global_step + 1)
     wandb.finish()
     return eval_metrics
 

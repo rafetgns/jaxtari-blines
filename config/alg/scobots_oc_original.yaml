@@ -1,7 +1,9 @@
 # SCoBots' own PPO setup: github.com/k4ntz/SCoBots train.py (object-centric
 # branch, SB3 PPO + MlpPolicy with pi/vf = [64, 64] ReLU), run with `-env 8`.
 ALG: SCOBOTS
-EXP_NAME: scobots_original
+EXP_NAME: scobots
+
+PIXEL_BASED: False # concepts are computed from the object-centric observation
 
 REWARD_MODE: 0 # 0: env, 1: concept reward only ("human"), 2: both ("mixed")
 HIDDEN_DIMS: [64, 64]
@@ -21,3 +23,4 @@ ANNEAL_CLIP: True
 ENT_COEF: 0.01
 VF_COEF: 2.0 # SB3's vf_coef=1 on an MSE without the 0.5 factor used here
 MAX_GRAD_NORM: 0.5
+SCAN_STEPS: 1 # updates per jitted chunk (one wandb log per update)
