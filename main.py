@@ -52,6 +52,8 @@ def main(config):
             from agents.crossq.crossq import single_run
         elif alg == "AGENT57":
             from agents.agent57.agent57 import single_run
+        elif alg == "PPO_CRL":
+            from agents.ppo_crl.ppo_crl import continual_run as single_run
         else:
             raise ValueError(f"Unknown ALG: {alg}")
 
