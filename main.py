@@ -1,6 +1,7 @@
 import hydra
 from omegaconf import OmegaConf
 
+OmegaConf.register_new_resolver("eval", eval, replace=True)
 
 @hydra.main(version_base=None, config_path="./config", config_name="config")
 def main(config):
@@ -54,6 +55,8 @@ def main(config):
             from agents.agent57.agent57 import single_run
         elif alg == "PPO_CRL":
             from agents.ppo_crl.ppo_crl import single_run
+        elif alg == "DREAMER":
+            from agents.dreamer import single_run
         else:
             raise ValueError(f"Unknown ALG: {alg}")
 
