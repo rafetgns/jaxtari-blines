@@ -36,6 +36,8 @@ def main(config):
             from agents.simba_sac.simba_sac import single_run
         elif alg == "SAC":
             from agents.sac.sac import single_run
+        elif alg == "SAC_CALE":
+            from agents.sac_cale.sac import single_run
         elif alg == "TD3":
             from agents.td3.td3 import single_run
         elif alg == "DDPG":

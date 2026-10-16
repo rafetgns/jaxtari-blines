@@ -1,0 +1,37 @@
+ALG: SAC_CALE
+EXP_NAME: sac_cale
+
+PIXEL_BASED: False
+NATIVE_DOWNSCALING: True
+
+POLICY_LR: 0.0003
+Q_LR: 0.0003
+ENCODER_LR: 0.0003
+ALPHA_LR: 0.0003
+GAMMA: 0.99
+TAU: 0.005
+BATCH_SIZE: 64
+BUFFER_SIZE: 100000
+LEARNING_STARTS: 10000 # uniform random actions until here; counts towards TOTAL_TIMESTEPS
+TRAIN_FREQUENCY: 1
+GRADIENT_STEPS: 1
+POLICY_FREQUENCY: 1
+TARGET_UPDATE_FREQUENCY: 1
+
+AUTOTUNE: True
+ALPHA: 0.2
+# soft quadratic penalty keeping log(alpha) within [LOG_ALPHA_MIN, LOG_ALPHA_MAX].
+# -1.0 (alpha >= 0.368 unpenalised) gave smoother, more human-like play; in practice
+# alpha settles around 0.075. Lower it to give the agent more freedom.
+LOG_ALPHA_MIN: -1.0
+LOG_ALPHA_MAX: 5.0
+
+# Dopamine-style scaling of the (clipped) reward in the critic target
+REWARD_SCALE_FACTOR: 10.0
+
+# CALE joystick deadzone: per-axis values within [-TAU_CALE, TAU_CALE] count as centred
+TAU_CALE: 0.5
+
+SCAN_STEPS: 10000
+NUM_ENVS: 1
+TOTAL_TIMESTEPS: 400000
