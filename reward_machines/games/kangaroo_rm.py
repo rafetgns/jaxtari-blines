@@ -1,8 +1,8 @@
 """
 Reward machine for JAXAtari Kangaroo.
 
-This implementation uses only the normalized, flattened, frame-stacked
-object-centric observation available to the generic RewardMachineWrapper.
+Events are read from the raw, frame-stacked object-centric observation
+(see GameRM): player, platforms, fruits and monkeys.
 
 The event definitions were derived from the Kangaroo environment mechanics
 and independently validated with observation inspection scripts.
@@ -306,68 +306,33 @@ class KangarooRm(GameRM):
     # Event detector
     # ---------------------------------------------------------
 
+    CRASH_Y = 186.0
+    FLOOR_EDGES = (28.5, 76.5, 124.5)
+
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-
-        NUM_FEATURES = 440
-
-        PLAYER_Y = 1
-        PLAYER_H = 3
-
-        PLATFORM_Y = slice(28, 48)
-        PLATFORM_ACTIVE = slice(88, 108)
-
-        FRUIT_ACTIVE = slice(340, 343)
-
-        MONKEY_STATE = slice(400, 404)
-
-        Y_SCALE = 210.0
-        STATE_SCALE = 255.0
-
-        CRASH_Y = 186.0
-        FLOOR_EDGES = jnp.array([28.5, 76.5, 124.5])
-
-        # -----------------------------------------------------
-        # Newest and previous object-centric frames
-        # -----------------------------------------------------
-
-        frames = obs.reshape(-1, NUM_FEATURES)
-
-        prev = frames[-2]
-        now = frames[-1]
+    def get_events(self, frames):
+        f32 = lambda v: jnp.asarray(v, jnp.float32)
 
         # -----------------------------------------------------
         # Player / grounded / floor
         # -----------------------------------------------------
 
-        player_y_now = now[PLAYER_Y] * Y_SCALE
-        player_h_now = now[PLAYER_H] * Y_SCALE
-        feet_now = player_y_now + player_h_now
+        player_y = f32(frames.player.y)
+        feet = player_y + f32(frames.player.height)
+        feet_now, feet_prev = feet[-1], feet[-2]
+        player_y_now, player_y_prev = player_y[-1], player_y[-2]
 
-        player_y_prev = prev[PLAYER_Y] * Y_SCALE
-        player_h_prev = prev[PLAYER_H] * Y_SCALE
-        feet_prev = player_y_prev + player_h_prev
-
-        platform_y = now[PLATFORM_Y] * Y_SCALE
-        platform_active = now[PLATFORM_ACTIVE] > 0.5
-
+        platform_active = jnp.asarray(frames.platforms.active, bool)  # (F, 20)
         platform_match = (
-            platform_active
-            & (jnp.abs(platform_y - feet_now) <= 0.5)
+            platform_active[-1]
+            & (jnp.abs(f32(frames.platforms.y[-1]) - feet_now) <= 0.5)
         )
 
         stable = jnp.abs(feet_now - feet_prev) <= 0.5
 
         grounded = jnp.any(platform_match) & stable
 
-        floor = (
-            3
-            - jnp.searchsorted(
-                FLOOR_EDGES,
-                feet_now,
-                side="left",
-            )
-        )
+        floor = 3 - jnp.searchsorted(jnp.array(self.FLOOR_EDGES), feet_now, side="left")
 
         on_floor_0 = grounded & (floor == 0)
         on_floor_1 = grounded & (floor == 1)
@@ -378,45 +343,27 @@ class KangarooRm(GameRM):
         # Death / respawn
         # -----------------------------------------------------
 
-        died = (
-            (player_y_prev >= CRASH_Y)
-            & (player_y_now < CRASH_Y)
-        )
+        died = (player_y_prev >= self.CRASH_Y) & (player_y_now < self.CRASH_Y)
 
         # -----------------------------------------------------
-        # Level change
+        # Level change: the number of active platforms changes
         # -----------------------------------------------------
 
-        prev_platform_active = prev[PLATFORM_ACTIVE] > 0.5
-        now_platform_active = now[PLATFORM_ACTIVE] > 0.5
-
-        prev_platform_count = jnp.sum(prev_platform_active)
-        now_platform_count = jnp.sum(now_platform_active)
-
-        level_changed = prev_platform_count != now_platform_count
+        level_changed = jnp.sum(platform_active[-2]) != jnp.sum(platform_active[-1])
 
         # -----------------------------------------------------
         # Fruit collection
         # -----------------------------------------------------
 
-        prev_fruit_active = prev[FRUIT_ACTIVE] > 0.5
-        now_fruit_active = now[FRUIT_ACTIVE] > 0.5
-
-        fruit_collected = jnp.any(
-            prev_fruit_active & ~now_fruit_active
-        )
+        fruit_active = jnp.asarray(frames.fruits.active, bool)
+        fruit_collected = jnp.any(fruit_active[-2] & ~fruit_active[-1])
 
         # -----------------------------------------------------
         # Monkey punch
         # -----------------------------------------------------
 
-        prev_monkey_state = jnp.rint(
-            prev[MONKEY_STATE] * STATE_SCALE
-        ).astype(jnp.int32)
-
-        now_monkey_state = jnp.rint(
-            now[MONKEY_STATE] * STATE_SCALE
-        ).astype(jnp.int32)
+        monkey_state = jnp.asarray(frames.monkeys.state, jnp.int32)
+        prev_monkey_state, now_monkey_state = monkey_state[-2], monkey_state[-1]
 
         monkey_candidate = jnp.any(
             (prev_monkey_state > 0)
@@ -425,11 +372,7 @@ class KangarooRm(GameRM):
         )
 
         # Reset/death transitions can also remove monkeys.
-        monkey_punched = (
-            monkey_candidate
-            & ~died
-            & ~level_changed
-        )
+        monkey_punched = monkey_candidate & ~died & ~level_changed
 
         return jnp.array(
             [

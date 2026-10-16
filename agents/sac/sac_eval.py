@@ -7,6 +7,8 @@ import jax.numpy as jnp
 from jaxtari.environment import JaxEnvironment
 from jaxtari.wrappers import JaxtariWrapper
 
+from agents.run_utils import game_states
+
 
 def evaluate(
     actor_params,
@@ -81,9 +83,9 @@ def evaluate(
         f"std return: {episodic_returns.std():.2f}"
     )
 
-    # the state path depends on the wrapper stack (AtariWrapper -> PixelObsWrapper / ObjectCentricWrapper)
+    # the first episode's game states, for the eval video
     env_states_until_done = jax.tree.map(
         lambda x: x[: int(first_done[0]) + 1],
-        first_states_history.atari_state.atari_state.env_state,
+        game_states(first_states_history),
     )
     return episodic_returns, env_states_until_done

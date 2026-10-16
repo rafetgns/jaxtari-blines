@@ -85,49 +85,35 @@ class FrostbiteRm(GameRM):
     def rewards(self):
         return self._rew
 
+    # igloo_progress counts placed blocks, 0..16; 16 = complete
+    IGLOO_COMPLETE = 16
+
+    # Frostbite constants in screen pixels
+    SHORE_Y = 56.0
+    SHORE_Y_TOLERANCE = 2.0
+    TARGET_DOOR_X = 122.0  # FrostbiteConstants.TARGET_IGLOO_X
+    DOOR_X_MIN, DOOR_X_MAX = 119.0, 126.0
+    DOOR_Y_MIN, DOOR_Y_MAX = 50.0, 56.0
+
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        NUM_FEATURES = 181
+    def get_events(self, frames):
+        bailey_x_now = frames.bailey.x[-1].astype(jnp.float32)
+        bailey_y_now = frames.bailey.y[-1].astype(jnp.float32)
+        bailey_active_now = frames.bailey.active[-1] > 0
+        bailey_x_prev = frames.bailey.x[-2].astype(jnp.float32)
+        bailey_y_prev = frames.bailey.y[-2].astype(jnp.float32)
+        bailey_active_prev = frames.bailey.active[-2] > 0
 
-        BAILEY_X = 0
-        BAILEY_Y = 1
-        BAILEY_ACTIVE = 4
-
-        IGLOO = -5
-        LIVES = -2
-
-        # Real Frostbite constants converted to normalized observation space
-        SHORE_Y = 56.0 / 210.0
-        SHORE_Y_TOLERANCE = 2.0 / 210.0
-
-        TARGET_DOOR_X = 122.0 / 160.0
-        DOOR_X_MIN = 119.0 / 160.0
-        DOOR_X_MAX = 126.0 / 160.0
-
-        # Newest frame
-        bailey_x_now = obs[-NUM_FEATURES + BAILEY_X]
-        bailey_y_now = obs[-NUM_FEATURES + BAILEY_Y]
-        bailey_active_now = obs[-NUM_FEATURES + BAILEY_ACTIVE]
-
-        igloo_now = obs[IGLOO]
-        lives_now = obs[LIVES]
-
-        # Previous frame
-        bailey_x_prev = obs[-2 * NUM_FEATURES + BAILEY_X]
-        bailey_y_prev = obs[-2 * NUM_FEATURES + BAILEY_Y]
-        bailey_active_prev = obs[-2 * NUM_FEATURES + BAILEY_ACTIVE]
-
-        igloo_prev = obs[IGLOO - NUM_FEATURES]
-        lives_prev = obs[LIVES - NUM_FEATURES]
+        igloo_now, igloo_prev = frames.igloo_progress[-1], frames.igloo_progress[-2]
+        lives_now, lives_prev = frames.lives[-1], frames.lives[-2]
+        complete_now = igloo_now >= self.IGLOO_COMPLETE
+        complete_prev = igloo_prev >= self.IGLOO_COMPLETE
 
         # -------------------------------------------------
         # Build skill
         # -------------------------------------------------
 
-        igloo_completed = (
-            (igloo_now >= 1.0)
-            & (igloo_prev < 1.0)
-        )
+        igloo_completed = complete_now & ~complete_prev
 
         igloo_progressed = (
             (igloo_now > igloo_prev)
@@ -136,7 +122,7 @@ class FrostbiteRm(GameRM):
 
         igloo_regressed = (
             (igloo_now < igloo_prev)
-            & (bailey_active_now > 0.5)
+            & bailey_active_now
         )
 
         lost_life = lives_now < lives_prev
@@ -145,46 +131,30 @@ class FrostbiteRm(GameRM):
         # Shore / navigation skill
         # -------------------------------------------------
 
-        at_shore_now = (
-            jnp.abs(bailey_y_now - SHORE_Y)
-            <= SHORE_Y_TOLERANCE
-        )
+        at_shore_now = jnp.abs(bailey_y_now - self.SHORE_Y) <= self.SHORE_Y_TOLERANCE
+        at_shore_prev = jnp.abs(bailey_y_prev - self.SHORE_Y) <= self.SHORE_Y_TOLERANCE
 
-        at_shore_prev = (
-            jnp.abs(bailey_y_prev - SHORE_Y)
-            <= SHORE_Y_TOLERANCE
-        )
-
-        reached_shore = (
-            at_shore_now
-            & (bailey_active_now > 0.5)
-            & (igloo_now >= 1.0)
-        )
+        reached_shore = at_shore_now & bailey_active_now & complete_now
 
         at_igloo_door = (
-                (igloo_now >= 1.0)
-                & (bailey_active_now > 0.5)
-                & (bailey_x_now >= DOOR_X_MIN)
-                & (bailey_x_now <= DOOR_X_MAX)
-                & (bailey_y_now >= (50.0 / 210.0))
-                & (bailey_y_now <= (56.0 / 210.0))
+                complete_now
+                & bailey_active_now
+                & (bailey_x_now >= self.DOOR_X_MIN)
+                & (bailey_x_now <= self.DOOR_X_MAX)
+                & (bailey_y_now >= self.DOOR_Y_MIN)
+                & (bailey_y_now <= self.DOOR_Y_MAX)
         )
 
         # Reward movement that actually reduces horizontal distance
         # to the real door while Bailey is on the shore.
-        distance_now = jnp.abs(
-            bailey_x_now - TARGET_DOOR_X
-        )
-
-        distance_prev = jnp.abs(
-            bailey_x_prev - TARGET_DOOR_X
-        )
+        distance_now = jnp.abs(bailey_x_now - self.TARGET_DOOR_X)
+        distance_prev = jnp.abs(bailey_x_prev - self.TARGET_DOOR_X)
 
         closer_to_door = (
             at_shore_now
             & at_shore_prev
-            & (igloo_now >= 1.0)
-            & (bailey_active_now > 0.5)
+            & complete_now
+            & bailey_active_now
             & (distance_now < distance_prev)
             & ~at_igloo_door
         )
@@ -193,11 +163,7 @@ class FrostbiteRm(GameRM):
         # Final entry skill
         # -------------------------------------------------
 
-        entered_igloo = (
-            (bailey_active_prev > 0.5)
-            & (bailey_active_now < 0.5)
-            & (igloo_prev >= 1.0)
-        )
+        entered_igloo = bailey_active_prev & ~bailey_active_now & complete_prev
 
         return jnp.array([
             igloo_progressed,

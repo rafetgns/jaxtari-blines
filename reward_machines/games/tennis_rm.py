@@ -55,7 +55,12 @@ class TennisRm(GameRM):
     # Penalty edges (enemy_point / enemy_game_progress) are deliberately not
     # options, see RewardMachineWrapper._option_signals.
     PHI_SCALE = 0.1
-    PHI_MAX_DIST = 0.8  # ~max normalized player-ball distance observed
+    PHI_MAX_DIST = 0.8  # ~max player-ball distance observed, in screen-normalised units (x / 160, y / 210)
+
+    SCREEN_W, SCREEN_H = 160.0, 210.0
+    SERVE_X_TOLERANCE = 0.08 * SCREEN_W  # px; 0.08 of the screen width, as in the PR
+    PLAYER_HEIGHT = 23.0                 # px
+    SERVE_Y_TOLERANCE = 3.0              # px, hit tolerance
 
     # RM states:
     #
@@ -166,49 +171,16 @@ class TennisRm(GameRM):
         return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        NUM_FEATURES = 29
-
-        # ObjectObservation layout:
-        # x, y, width, height, active, state, vis_id, orientation
-        PLAYER_X = 0
-        PLAYER_Y = 1
-
-        BALL_X = 16
-        BALL_Y = 17
-
-        SERVE = 24
-
-        PLAYER_POINTS = 25
-        ENEMY_POINTS = 26
-        PLAYER_GAME_SCORE = 27
-        ENEMY_GAME_SCORE = 28
+    def get_events(self, frames):
+        f32 = lambda v: jnp.asarray(v, jnp.float32)
+        ball_x, ball_y = f32(frames.ball.x), f32(frames.ball.y)
+        player_x, player_y = f32(frames.player.x), f32(frames.player.y)
 
         # --------------------------------------------------------------
-        # Ball-in-play detector
+        # Ball-in-play detector: the ball moved over both of the last two steps
         # --------------------------------------------------------------
-        EPS = 1e-6
-
-        ball_x_f1 = obs[-3 * NUM_FEATURES + BALL_X]
-        ball_y_f1 = obs[-3 * NUM_FEATURES + BALL_Y]
-
-        ball_x_f2 = obs[-2 * NUM_FEATURES + BALL_X]
-        ball_y_f2 = obs[-2 * NUM_FEATURES + BALL_Y]
-
-        ball_x_f3 = obs[-NUM_FEATURES + BALL_X]
-        ball_y_f3 = obs[-NUM_FEATURES + BALL_Y]
-
-        m2 = (
-            (jnp.abs(ball_x_f2 - ball_x_f1) > EPS)
-            | (jnp.abs(ball_y_f2 - ball_y_f1) > EPS)
-        )
-
-        m3 = (
-            (jnp.abs(ball_x_f3 - ball_x_f2) > EPS)
-            | (jnp.abs(ball_y_f3 - ball_y_f2) > EPS)
-        )
-
-        ball_in_play = m2 & m3
+        moved = (ball_x[1:] != ball_x[:-1]) | (ball_y[1:] != ball_y[:-1])  # (3,)
+        ball_in_play = moved[-2] & moved[-1]
 
         # --------------------------------------------------------------
         # Serve-preparation detector
@@ -216,94 +188,22 @@ class TennisRm(GameRM):
         #
         # Horizontal distance alone can also match enemy-serve layouts,
         # so both horizontal and vertical alignment are required.
-        #
-        # Tennis constants:
-        # FRAME_HEIGHT  = 210
-        # PLAYER_HEIGHT = 23
-        # hit tolerance = 3 pixels
-
-        player_x_now = obs[-NUM_FEATURES + PLAYER_X]
-        player_y_now = obs[-NUM_FEATURES + PLAYER_Y]
-
-        ball_x_now = obs[-NUM_FEATURES + BALL_X]
-        ball_y_now = obs[-NUM_FEATURES + BALL_Y]
-
-        serve_now = obs[-NUM_FEATURES + SERVE] > 0.5
-
-        X_THRESHOLD = 0.08
-        PLAYER_HEIGHT_NORMALIZED = 23.0 / 210.0
-        Y_THRESHOLD = 3.0 / 210.0
-
-        x_aligned = (
-            jnp.abs(player_x_now - ball_x_now)
-            <= X_THRESHOLD
-        )
-
-        y_aligned = (
-            jnp.abs(
-                (
-                    player_y_now
-                    + PLAYER_HEIGHT_NORMALIZED
-                )
-                - ball_y_now
-            )
-            <= Y_THRESHOLD
-        )
-
-        serve_ready = (
-            serve_now
-            & x_aligned
-            & y_aligned
-        )
+        serve_now = f32(frames.is_serving_state[-1]) > 0.5
+        x_aligned = jnp.abs(player_x[-1] - ball_x[-1]) <= self.SERVE_X_TOLERANCE
+        y_aligned = jnp.abs((player_y[-1] + self.PLAYER_HEIGHT) - ball_y[-1]) <= self.SERVE_Y_TOLERANCE
+        serve_ready = serve_now & x_aligned & y_aligned
 
         # --------------------------------------------------------------
         # Score events
         # --------------------------------------------------------------
-        player_points_now = obs[
-            -NUM_FEATURES + PLAYER_POINTS
-        ]
-        enemy_points_now = obs[
-            -NUM_FEATURES + ENEMY_POINTS
-        ]
+        def gained(field):
+            v = f32(field)
+            return v[-1] > v[-2]
 
-        player_game_now = obs[
-            -NUM_FEATURES + PLAYER_GAME_SCORE
-        ]
-        enemy_game_now = obs[
-            -NUM_FEATURES + ENEMY_GAME_SCORE
-        ]
-
-        player_points_prev = obs[
-            -2 * NUM_FEATURES + PLAYER_POINTS
-        ]
-        enemy_points_prev = obs[
-            -2 * NUM_FEATURES + ENEMY_POINTS
-        ]
-
-        player_game_prev = obs[
-            -2 * NUM_FEATURES + PLAYER_GAME_SCORE
-        ]
-        enemy_game_prev = obs[
-            -2 * NUM_FEATURES + ENEMY_GAME_SCORE
-        ]
-
-        player_game_progress = (
-            player_game_now > player_game_prev
-        )
-
-        enemy_game_progress = (
-            enemy_game_now > enemy_game_prev
-        )
-
-        player_point = (
-            (player_points_now > player_points_prev)
-            | player_game_progress
-        )
-
-        enemy_point = (
-            (enemy_points_now > enemy_points_prev)
-            | enemy_game_progress
-        )
+        player_game_progress = gained(frames.player_sets)
+        enemy_game_progress = gained(frames.enemy_sets)
+        player_point = gained(frames.player_points) | player_game_progress
+        enemy_point = gained(frames.enemy_points) | enemy_game_progress
 
         return jnp.array([
             ball_in_play,
@@ -315,12 +215,12 @@ class TennisRm(GameRM):
         ]).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         """Shaping potential: closeness of the player to the ball (last frame).
 
         Phi in [0, PHI_SCALE]; kept small relative to the +-1 / +-3 RM rewards.
         """
-        NUM_FEATURES = 29
-        now = obs[-NUM_FEATURES:]
-        dist = jnp.hypot(now[0] - now[16], now[1] - now[17])
+        dx = (jnp.asarray(frames.player.x[-1], jnp.float32) - frames.ball.x[-1]) / self.SCREEN_W
+        dy = (jnp.asarray(frames.player.y[-1], jnp.float32) - frames.ball.y[-1]) / self.SCREEN_H
+        dist = jnp.hypot(dx, dy)
         return self.PHI_SCALE * (1.0 - jnp.clip(dist / self.PHI_MAX_DIST, 0.0, 1.0))

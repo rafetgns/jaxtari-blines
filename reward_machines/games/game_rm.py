@@ -4,7 +4,17 @@ import functools
 import jax
 import jax.numpy as jnp
 
+
 class GameRM(ABC):
+    """Per-game reward machine: propositions, transitions and an optional potential.
+
+    `get_events` and `potential` receive `frames`, the game's own observation
+    (unnormalised, with named fields) stacked over the wrapper's frame stack:
+    every leaf has a leading axis of length 4, oldest frame first, so
+    `frames.player.y[-1]` is the current and `frames.player.y[-2]` the previous
+    agent step's value. Reading named fields instead of positions in the
+    flattened vector keeps the labelling valid when a game's observation grows.
+    """
 
     TRANSITIONS = []
 
@@ -50,10 +60,11 @@ class GameRM(ABC):
 
     @abstractmethod
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs) -> jnp.ndarray:
-        """Game-specific labelling: obs -> boolean proposition vector."""
+    def get_events(self, frames) -> jnp.ndarray:
+        """Game-specific labelling: stacked observation frames -> int32 proposition vector."""
         ...
+
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs: jnp.ndarray) -> jnp.ndarray:
+    def potential(self, frames) -> jnp.ndarray:
         """Shaping potential Phi(s). Default 0.0 means no shaping for this game."""
         return jnp.zeros(())

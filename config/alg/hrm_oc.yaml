@@ -1,0 +1,40 @@
+# Hierarchy of Reward Machines (PR #31's double_dqn_hrm.yaml). Needs a game whose RM marks
+# subgoal edges with "option": True (not pong); potential-based shaping comes from RM_SHAPING
+# in config.yaml and only affects the meta-controller's return.
+ALG: HRM
+EXP_NAME: hrm
+
+PIXEL_BASED: False # reward machines label events from the object-centric observation
+NATIVE_DOWNSCALING: True
+
+TOTAL_TIMESTEPS: 9_932_800
+NUM_ENVS: 2048
+SCAN_STEPS: 50 # updates per jitted chunk
+GAMMA: 0.99
+LEARNING_STARTS: 20_000
+TRAIN_FREQUENCY: 1 # env steps (per env) between updates
+TAU: 1.0
+MAX_GRAD_NORM: 10.0
+ANNEAL_LR: False
+
+# --- option level (one Double DQN head per option) ---
+LEARNING_RATE: 2.5e-4
+GRADIENT_STEPS: 64
+BUFFER_SIZE: 500_000
+BATCH_SIZE: 512
+TARGET_NETWORK_FREQUENCY: 12_288 # env steps; = 6 updates x 2048 envs, i.e. every ~375 gradient steps
+START_E: 1.0
+END_E: 0.02
+EXPLORATION_FRACTION: 0.302 # epsilon reaches END_E after 3M env steps
+
+# --- meta level (SMDP Q-learning over options) ---
+META_LEARNING_RATE: 1.0e-4
+META_BUFFER_SIZE: 100_000
+META_BATCH_SIZE: 64
+META_TARGET_NETWORK_FREQUENCY: 768_000 # env steps; = 375 updates x 2048 envs
+META_START_E: 1.0
+META_END_E: 0.1
+META_EXPLORATION_STEPS: 200_000 # finished options, not env steps
+
+# --- options ---
+OPTION_MAX_STEPS: 200

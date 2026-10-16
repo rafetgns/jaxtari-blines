@@ -26,10 +26,11 @@ from agents.iqn.iqn_eval import evaluate
 from agents.run_utils import eval_mod_configs, plan_chunks
 from agents.networks import impala_cnn
 from agents.occam.occam import OCCAMWrapper, log_occam_comparison_video
+from reward_machines.rm_registry import rm_run_suffix, rm_settings, wrap_reward_machine
 from rtpt import RTPT
 
 
-def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False, occam_mask=None):
+def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=False, occam_mask=None, reward_machine=None):
     assert mods is None or isinstance(mods, list), "mods must be None or a list of strings"
     if mods is not None and len(mods) == 0:
         mods = None
@@ -73,6 +74,9 @@ def make_env(env_id, mods=[], pixel_based=True, native_downscaling=True, eval=Fa
                     )
                 )
             )
+        if reward_machine is not None:
+            # RM reward (game reward in eval) and the RM state appended to the observation
+            env = wrap_reward_machine(env, env_id, eval=eval, **reward_machine)
         env = LogWrapper(env)
         return env
     return thunk
@@ -137,7 +141,7 @@ def single_run(config: dict):
     if config.get("PIXEL_BASED", True) and config.get("NUM_ENVS", 1) > 16:
         print("Warning: More than 16 environments may cause OOM on GPU when using pixel-based observations.")
 
-    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' if not config['PIXEL_BASED'] else 'pixel' + ('_occam-' + config['OCCAM_MASK'] if config.get('OCCAM_MASK') else '') + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
+    run_name = f"{config['ENV_ID']}_{config['EXP_NAME']}_{'oc' + rm_run_suffix(config) if not config['PIXEL_BASED'] else 'pixel' + ('_occam-' + config['OCCAM_MASK'] if config.get('OCCAM_MASK') else '') + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -163,6 +167,7 @@ def single_run(config: dict):
         config.get("NATIVE_DOWNSCALING", True),
         False,
         occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None,
+        reward_machine=rm_settings(config),
     )()
 
     action_dim = env.action_space().n
@@ -370,6 +375,7 @@ def single_run(config: dict):
                     native_downscaling=config["NATIVE_DOWNSCALING"],
                     eval=True,
                     occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None,
+                    reward_machine=rm_settings(config),
                 ),
                 config["ENV_ID"],
                 eval_episodes=10,

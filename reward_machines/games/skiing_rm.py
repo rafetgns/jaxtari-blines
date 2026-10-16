@@ -2,26 +2,17 @@ import functools
 import jax
 import jax.numpy as jnp
 from reward_machines.games.game_rm import GameRM
-from reward_machines.games.utils import build_transitions, field, field_slice
+from reward_machines.games.utils import build_transitions
 
-# Layout from jaxatari@c805a3d SkiingObservation (73 per frame):
-# skier@0(N=1) flags@8(N=2) trees@24(N=4) moguls@56(N=2) successful_gates@72
-# Each flag entry is ONE gate: left pole at x, right pole at x + flag_distance.
-# x is normalized by 160, y by 210.
-NUM_FEATURES = 73
-SKIER_X = 0
-N_FLAGS = 2
-FLAGS_X = 8                      # 8..9
-FLAGS_Y = 8 + N_FLAGS            # 10..11
-FLAGS_ACTIVE = 8 + 4 * N_FLAGS   # 16..17
-SUCCESSFUL_GATES = 72
-
-GATE_HALF_WIDTH = 16.0 / 160.0   # consts.flag_distance = 32 px
-SKIER_Y = 46.0 / 210.0           # consts.skier_y
+# Positions are recovered in the env's own coordinates: the observation shifts
+# objects by half their size (x - width // 2, y - height // 2).
+GATE_HALF_WIDTH = 16.0   # consts.flag_distance = 32 px between the poles
+SKIER_Y = 46.0           # consts.skier_y, the line flags must cross
+ALIGN_RANGE = 80.0       # half the screen width (160 px)
 
 # NOTE: despite its name, `successful_gates` is a COUNTDOWN of gates remaining
 # (starts at 20, -1 per passed gate; env reward = prev - now). See
-# jaxatari/games/jax_skiing.py. So a gate is passed when it DECREASES.
+# jaxtari/games/jax_skiing.py. So a gate is passed when it DECREASES.
 
 
 class SkiingRm(GameRM):
@@ -81,29 +72,32 @@ class SkiingRm(GameRM):
     def to_states(self):      return self._to
     def rewards(self):        return self._rew
 
-    @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        gates_now  = field(obs, NUM_FEATURES, SUCCESSFUL_GATES, frames_ago=0)
-        gates_prev = field(obs, NUM_FEATURES, SUCCESSFUL_GATES, frames_ago=1)
-        gate_passed = gates_now < gates_prev  # counter counts DOWN, see note above
+    @staticmethod
+    def _flag_y(flags):
+        return flags.y + flags.height // 2
 
-        fy_now  = field_slice(obs, NUM_FEATURES, FLAGS_Y, N_FLAGS, frames_ago=0)
-        fy_prev = field_slice(obs, NUM_FEATURES, FLAGS_Y, N_FLAGS, frames_ago=1)
-        crossed = jnp.any((fy_prev > SKIER_Y) & (fy_now <= SKIER_Y))
+    @functools.partial(jax.jit, static_argnums=(0,))
+    def get_events(self, frames):
+        gate_passed = frames.successful_gates[-1] < frames.successful_gates[-2]  # counts DOWN, see note above
+
+        fy_now = self._flag_y(frames.flags)[-1]
+        fy_prev = self._flag_y(frames.flags)[-2]
+        crossed = jnp.any((fy_prev > SKIER_Y) & (fy_now <= SKIER_Y))  # same test as the env's `crossed`
         gate_missed = crossed & ~gate_passed
 
         return jnp.array([gate_passed, gate_missed]).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
-        """Phi = PHI_SCALE * (1 - |skier_x - centre of next gate| / 0.5); 0 if no gate ahead."""
-        skier_x = field(obs, NUM_FEATURES, SKIER_X)
-        fx = field_slice(obs, NUM_FEATURES, FLAGS_X, N_FLAGS)
-        fy = field_slice(obs, NUM_FEATURES, FLAGS_Y, N_FLAGS)
-        active = field_slice(obs, NUM_FEATURES, FLAGS_ACTIVE, N_FLAGS) > 0.5
+    def potential(self, frames):
+        """Phi = PHI_SCALE * (1 - |skier_x - centre of next gate| / 80 px); 0 if no gate ahead."""
+        skier = jax.tree.map(lambda x: x[-1], frames.skier)
+        flags = jax.tree.map(lambda x: x[-1], frames.flags)
+        skier_x = skier.x + skier.width // 2
+        fy = self._flag_y(flags)
+        active = flags.active > 0
 
         ahead = active & (fy > SKIER_Y)                 # flags scroll up towards the skier
         next_idx = jnp.argmin(jnp.where(ahead, fy, jnp.inf))
-        centre = fx[next_idx] + GATE_HALF_WIDTH
-        align = 1.0 - jnp.clip(jnp.abs(skier_x - centre) / 0.5, 0.0, 1.0)
+        centre = flags.x[next_idx] + flags.width[next_idx] // 2 + GATE_HALF_WIDTH
+        align = 1.0 - jnp.clip(jnp.abs(skier_x - centre) / ALIGN_RANGE, 0.0, 1.0)
         return jnp.where(jnp.any(ahead), self.PHI_SCALE * align, 0.0)

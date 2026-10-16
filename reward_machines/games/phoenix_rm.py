@@ -6,12 +6,8 @@ from reward_machines.games.utils import build_transitions
 
 
 class PhoenixRm(GameRM):
-    NUM_FEATURES = 1450
-    SCORE_OFFSET, LIVES_OFFSET = -2, -1
-    BOSS_ACTIVE_OFFSET = -1302
-    BLOCKS_ACTIVE_START, BLOCKS_ACTIVE_END = -650, -488
-    ENEMIES_ACTIVE_START, ENEMIES_ACTIVE_END = -1338, -1330
-    TOTAL_BLOCKS = 162
+    TOTAL_BLOCKS = 162  # boss shield blocks
+    NUM_ENEMIES = 8
     PHI_SCALE = 0.5
 
     PROP_INDEX = {
@@ -50,15 +46,12 @@ class PhoenixRm(GameRM):
     def rewards(self):        return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        score_now = obs[self.SCORE_OFFSET]
-        lives_now = obs[self.LIVES_OFFSET]
-        boss_active_now = obs[self.BOSS_ACTIVE_OFFSET]
-        blocks_active_now = jnp.sum(obs[self.BLOCKS_ACTIVE_START:self.BLOCKS_ACTIVE_END])
-        score_prev = obs[self.SCORE_OFFSET - self.NUM_FEATURES]
-        lives_prev = obs[self.LIVES_OFFSET - self.NUM_FEATURES]
-        boss_active_prev = obs[self.BOSS_ACTIVE_OFFSET - self.NUM_FEATURES]
-        blocks_active_prev = jnp.sum(obs[self.BLOCKS_ACTIVE_START - self.NUM_FEATURES:self.BLOCKS_ACTIVE_END - self.NUM_FEATURES])
+    def get_events(self, frames):
+        score_now, score_prev = frames.player_score[-1], frames.player_score[-2]
+        lives_now, lives_prev = frames.lives[-1], frames.lives[-2]
+        boss_active_now = frames.boss.active[-1]
+        blocks_active_now = jnp.sum(frames.boss_blocks.active[-1])
+        blocks_active_prev = jnp.sum(frames.boss_blocks.active[-2])
 
         lost_life = lives_now < lives_prev
         scored = score_now > score_prev
@@ -69,12 +62,12 @@ class PhoenixRm(GameRM):
 
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         """Normalized phase progress in [0, 1]; kept small relative to RM rewards."""
-        boss_active = obs[self.BOSS_ACTIVE_OFFSET] > 0
-        blocks_active = jnp.sum(obs[self.BLOCKS_ACTIVE_START:self.BLOCKS_ACTIVE_END])
-        enemies_active = jnp.sum(obs[self.ENEMIES_ACTIVE_START:self.ENEMIES_ACTIVE_END])
+        boss_active = frames.boss.active[-1] > 0
+        blocks_active = jnp.sum(frames.boss_blocks.active[-1]).astype(jnp.float32)
+        enemies_active = jnp.sum(frames.enemies.active[-1]).astype(jnp.float32)
 
         boss_progress = 1.0 - blocks_active / self.TOTAL_BLOCKS
-        wave_progress = 1.0 - enemies_active / 8.0
+        wave_progress = 1.0 - enemies_active / self.NUM_ENEMIES
         return self.PHI_SCALE * jnp.where(boss_active, boss_progress, wave_progress)

@@ -2,15 +2,11 @@ import functools
 import jax
 import jax.numpy as jnp
 from reward_machines.games.game_rm import GameRM
-from reward_machines.games.utils import build_transitions, field_slice
+from reward_machines.games.utils import build_transitions
 
-# Layout verified against jaxatari@c805a3d (PacmanObservation, 275 per frame):
-# player_position@0+2 player_action@2 ghost_positions@3+8 ghost_actions@11+4
-# fruit_position@15+2 fruit_action@17 fruit_type@18 pellets@19+252 power_pellets@271+4
-NUM_FEATURES = 275
-PELLETS = 19
+# pellets (252 grid slots) and power_pellets (4) are ObjectObservations; a
+# slot is active while its pellet is uneaten (off-path slots are never active)
 NUM_PELLETS = 252
-POWER_PELLETS = 271
 NUM_POWER_PELLETS = 4
 
 
@@ -67,14 +63,13 @@ class MsPacmanRm(GameRM):
     def rewards(self):        return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        pellets_left_now  = jnp.sum(field_slice(obs, NUM_FEATURES, PELLETS, NUM_PELLETS, frames_ago=0))
-        pellets_left_prev = jnp.sum(field_slice(obs, NUM_FEATURES, PELLETS, NUM_PELLETS, frames_ago=1))
-        power_now  = jnp.sum(field_slice(obs, NUM_FEATURES, POWER_PELLETS, NUM_POWER_PELLETS, frames_ago=0))
-        power_prev = jnp.sum(field_slice(obs, NUM_FEATURES, POWER_PELLETS, NUM_POWER_PELLETS, frames_ago=1))
+    def get_events(self, frames):
+        pellets_left = jnp.sum(frames.pellets.active, axis=-1)
+        power_left = jnp.sum(frames.power_pellets.active, axis=-1)
+        pellets_left_now, pellets_left_prev = pellets_left[-1], pellets_left[-2]
 
         pellet_eaten       = pellets_left_now < pellets_left_prev
-        power_pellet_eaten = power_now < power_prev
+        power_pellet_eaten = power_left[-1] < power_left[-2]
         # Pellets never increase inside a level, so an increase = next level.
         # (prev > 0 so a level whose empty frame WAS observed is not counted twice)
         level_cleared = (pellets_left_prev > 0) & (
@@ -84,7 +79,6 @@ class MsPacmanRm(GameRM):
         return jnp.array([level_cleared, power_pellet_eaten, pellet_eaten]).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         """Phi = PHI_SCALE * fraction of pellet slots already eaten in this level."""
-        pellets_now = field_slice(obs, NUM_FEATURES, PELLETS, NUM_PELLETS, frames_ago=0)
-        return self.PHI_SCALE * (1.0 - jnp.sum(pellets_now) / NUM_PELLETS)
+        return self.PHI_SCALE * (1.0 - jnp.sum(frames.pellets.active[-1]) / NUM_PELLETS)

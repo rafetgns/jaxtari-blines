@@ -21,3 +21,17 @@ def eval_mod_configs(config: dict):
         label = mod if isinstance(mod, str) else "_".join(str(m) for m in mods)
         mod_configs.append((mods, label))
     return mod_configs
+
+
+def game_states(states):
+    """Walk wrapper states down to the game's own state (for rendering eval videos).
+
+    Every jaxtari wrapper state (PixelState, ObjectCentricState, LogState, ...)
+    keeps its inner state as `atari_state`, down to AtariWrapper's AtariState,
+    whose `env_state` is the game state; the depth depends on the wrapper stack.
+    """
+    from jaxtari.wrappers import AtariState
+
+    while not isinstance(states, AtariState):
+        states = states.atari_state
+    return states.env_state

@@ -33,3 +33,9 @@ CNN_TYPE: nature
 # OCCAM (Blüml et al., 2025) for pixel-based runs: object masks instead of frames.
 # null = plain frames, or one of binary | object | class | planes; ignored for OC
 OCCAM_MASK: null
+
+# reward machines (Toro Icarte et al., 2018) for object-centric runs: the game's RM
+# (reward_machines/) pays the reward and its state is appended to the observation;
+# evaluation still scores the game reward. RM_SHAPING adds potential-based shaping.
+REWARD_MACHINE: False
+RM_SHAPING: False

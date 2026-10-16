@@ -2,26 +2,11 @@ import functools
 import jax
 import jax.numpy as jnp
 from reward_machines.games.game_rm import GameRM
-from reward_machines.games.utils import build_transitions, field, field_slice
+from reward_machines.games.utils import build_transitions
 
-# Layout from jaxatari@c805a3d GravitarObservation (194 per frame).
-# Every ObjectObservation block is 8 fields x N objects, grouped by field:
-# ship@0(N=1) enemies@8(N=4) fuel_tanks@40(N=4) saucer@72 ufo@80
-# planets@88(N=7) projectiles@144(N=4) terrain@176 reactor_destination@184
-# lives@192 fuel@193
-NUM_FEATURES = 194
-ENEMIES = 8;                N_ENEMIES = 4
-FUEL_TANKS = 40;            N_FUEL_TANKS = 4
-TERRAIN = 176
-LIVES = 192
-
-ACTIVE_SUBOFFSET = 4     # "active" is the 5th field of an ObjectObservation
-VISUAL_SUBOFFSET = 5     # "visual_id" is the 6th field
-
-ENEMY_ACTIVE = ENEMIES + ACTIVE_SUBOFFSET * N_ENEMIES          # 24..27
-TANK_ACTIVE = FUEL_TANKS + ACTIVE_SUBOFFSET * N_FUEL_TANKS     # 56..59
-TERRAIN_ACTIVE = TERRAIN + ACTIVE_SUBOFFSET                    # 180 (1 inside a planet level)
-TERRAIN_VISUAL = TERRAIN + VISUAL_SUBOFFSET                    # 181 (which planet terrain)
+# Inside a planet level the terrain ObjectObservation has active boxes (it has
+# none on the map and in the saucer arena); every box carries the level's
+# terrain sprite as visual_id, which tells levels apart.
 
 
 class GravitarRm(GameRM):
@@ -97,40 +82,39 @@ class GravitarRm(GameRM):
     def rewards(self):        return self._rew
 
     @staticmethod
-    def _in_level(obs, frames_ago=0):
-        return field(obs, NUM_FEATURES, TERRAIN_ACTIVE, frames_ago=frames_ago) > 0.5
+    def _in_level(frames):
+        """(F,) bool: a planet level's terrain is on screen."""
+        return jnp.any(frames.terrain.active > 0, axis=-1)
+
+    @staticmethod
+    def _level_id(frames):
+        return jnp.max(frames.terrain.visual_id, axis=-1)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        lives_now  = field(obs, NUM_FEATURES, LIVES, frames_ago=0)
-        lives_prev = field(obs, NUM_FEATURES, LIVES, frames_ago=1)
+    def get_events(self, frames):
+        tanks = jnp.sum(frames.fuel_tanks.active, axis=-1)
+        enemies = jnp.sum(frames.enemies.active, axis=-1)
+        in_level_all = self._in_level(frames)
+        level_id = self._level_id(frames)
 
-        tanks_now    = jnp.sum(field_slice(obs, NUM_FEATURES, TANK_ACTIVE, N_FUEL_TANKS, frames_ago=0))
-        tanks_prev   = jnp.sum(field_slice(obs, NUM_FEATURES, TANK_ACTIVE, N_FUEL_TANKS, frames_ago=1))
-        enemies_now  = jnp.sum(field_slice(obs, NUM_FEATURES, ENEMY_ACTIVE, N_ENEMIES, frames_ago=0))
-        enemies_prev = jnp.sum(field_slice(obs, NUM_FEATURES, ENEMY_ACTIVE, N_ENEMIES, frames_ago=1))
+        in_level = in_level_all[-1]
+        same_level = in_level & in_level_all[-2] & (level_id[-1] == level_id[-2])
 
-        in_level = self._in_level(obs, 0)
-        same_level = (
-            in_level
-            & self._in_level(obs, 1)
-            & (field(obs, NUM_FEATURES, TERRAIN_VISUAL, frames_ago=0)
-               == field(obs, NUM_FEATURES, TERRAIN_VISUAL, frames_ago=1))
-        )
-
-        lost_life           = lives_now < lives_prev
-        fuel_tank_collected = same_level & (tanks_now < tanks_prev)
-        enemy_destroyed     = same_level & (enemies_now < enemies_prev)
-        enemies_cleared     = same_level & (enemies_prev > 0) & (enemies_now == 0)
+        lost_life           = frames.lives[-1] < frames.lives[-2]
+        fuel_tank_collected = same_level & (tanks[-1] < tanks[-2])
+        enemy_destroyed     = same_level & (enemies[-1] < enemies[-2])
+        enemies_cleared     = same_level & (enemies[-2] > 0) & (enemies[-1] == 0)
 
         return jnp.array([
             lost_life, fuel_tank_collected, enemy_destroyed, enemies_cleared, in_level,
         ]).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         """Inside a planet level: PHI_SCALE * mean(enemies gone, tanks gone). 0 on the map."""
-        enemies_left = jnp.sum(field_slice(obs, NUM_FEATURES, ENEMY_ACTIVE, N_ENEMIES))
-        tanks_left = jnp.sum(field_slice(obs, NUM_FEATURES, TANK_ACTIVE, N_FUEL_TANKS))
-        progress = 0.5 * ((1.0 - enemies_left / N_ENEMIES) + (1.0 - tanks_left / N_FUEL_TANKS))
-        return jnp.where(self._in_level(obs, 0), self.PHI_SCALE * progress, 0.0)
+        n_enemies = frames.enemies.active.shape[-1]
+        n_tanks = frames.fuel_tanks.active.shape[-1]
+        enemies_left = jnp.sum(frames.enemies.active[-1])
+        tanks_left = jnp.sum(frames.fuel_tanks.active[-1])
+        progress = 0.5 * ((1.0 - enemies_left / n_enemies) + (1.0 - tanks_left / n_tanks))
+        return jnp.where(self._in_level(frames)[-1], self.PHI_SCALE * progress, 0.0)

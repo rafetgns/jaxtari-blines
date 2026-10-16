@@ -7,9 +7,6 @@ from reward_machines.games.utils import build_transitions
 
 class AsteroidsRm(GameRM):
 
-    NUM_FEATURES = 162
-    WIDTH_START, WIDTH_END = -104, -87  # asteroids.width of the newest frame
-    SCREEN_WIDTH = 160.0                # normalization bound of the width field
     W_LARGE, W_MEDIUM, W_SMALL = 16.0, 8.0, 4.0
 
     PROP_INDEX = {
@@ -40,12 +37,9 @@ class AsteroidsRm(GameRM):
     def rewards(self):        return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        F = self.NUM_FEATURES
-        w_now = jnp.round(obs[self.WIDTH_START:self.WIDTH_END] * self.SCREEN_WIDTH)
-        w_prev = jnp.round(
-            obs[self.WIDTH_START - F:self.WIDTH_END - F] * self.SCREEN_WIDTH
-        )
+    def get_events(self, frames):
+        w_now = frames.asteroids.width[-1].astype(jnp.float32)
+        w_prev = frames.asteroids.width[-2].astype(jnp.float32)
         # A hit downgrades the asteroid in its own slot: L -> M, M -> S, S -> gone.
         # Split-off mediums spawn into empty slots (0 -> 8) and are not counted.
         hit_large = jnp.any((w_prev == self.W_LARGE) & (w_now == self.W_MEDIUM))
@@ -54,5 +48,5 @@ class AsteroidsRm(GameRM):
         return jnp.array([hit_small, hit_medium, hit_large]).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         return jnp.zeros(())

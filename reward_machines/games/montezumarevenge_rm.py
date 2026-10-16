@@ -2,32 +2,10 @@ import functools
 import jax
 import jax.numpy as jnp
 from reward_machines.games.game_rm import GameRM
-from reward_machines.games.utils import build_transitions, field, field_slice
+from reward_machines.games.utils import build_transitions
 
-# Layout from jaxatari@c805a3d MontezumaRevengeObservation (192 per frame).
-# Every ObjectObservation block is 8 fields x N objects, grouped by field
-# (x, y, width, height, active, visual_id, state, orientation):
-# player@0(N=1) enemies@8(N=3) items@32(N=3) conveyors@56(N=1)
-# doors@64(N=2) ropes@80(N=2) platforms@96(N=12)
-# x is normalized by 160, y by 210.
-NUM_FEATURES = 192
-PLAYER_X, PLAYER_Y = 0, 1
-ACTIVE_SUBOFFSET = 4
-
-ITEMS = 32
-N_ITEMS = 3
-ITEMS_X = ITEMS                                    # 32..34
-ITEMS_Y = ITEMS + N_ITEMS                          # 35..37
-ITEMS_ACTIVE = ITEMS + ACTIVE_SUBOFFSET * N_ITEMS  # 44..46
-
-DOORS = 64
-N_DOORS = 2
-DOORS_ACTIVE = DOORS + ACTIVE_SUBOFFSET * N_DOORS  # 72..73
-
-# Static room geometry used to detect a room change:
-# platforms x, y, width (3 fields x 12 platforms) = indices 96..131.
-PLATFORM_GEOM = 96
-PLATFORM_GEOM_LEN = 36
+# distances are measured in screen fractions, as in the normalised observation
+SCREEN_W, SCREEN_H = 160.0, 210.0
 
 
 class MontezumaRm(GameRM):
@@ -82,31 +60,28 @@ class MontezumaRm(GameRM):
     def rewards(self):        return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        geom_now  = field_slice(obs, NUM_FEATURES, PLATFORM_GEOM, PLATFORM_GEOM_LEN, frames_ago=0)
-        geom_prev = field_slice(obs, NUM_FEATURES, PLATFORM_GEOM, PLATFORM_GEOM_LEN, frames_ago=1)
-        same_room = jnp.all(jnp.abs(geom_now - geom_prev) < 1e-6)
+    def get_events(self, frames):
+        # static room geometry: the platforms' x, y and width change only with the room
+        p = frames.platforms
+        geom = jnp.concatenate([p.x, p.y, p.width], axis=-1)
+        same_room = jnp.all(geom[-1] == geom[-2])
 
-        items_now  = jnp.sum(field_slice(obs, NUM_FEATURES, ITEMS_ACTIVE, N_ITEMS, frames_ago=0))
-        items_prev = jnp.sum(field_slice(obs, NUM_FEATURES, ITEMS_ACTIVE, N_ITEMS, frames_ago=1))
-        doors_now  = jnp.sum(field_slice(obs, NUM_FEATURES, DOORS_ACTIVE, N_DOORS, frames_ago=0))
-        doors_prev = jnp.sum(field_slice(obs, NUM_FEATURES, DOORS_ACTIVE, N_DOORS, frames_ago=1))
+        items = jnp.sum(frames.items.active, axis=-1)
+        doors = jnp.sum(frames.doors.active, axis=-1)
 
-        item_collected = same_room & (items_now < items_prev)
-        door_opened    = same_room & (doors_now < doors_prev)
+        item_collected = same_room & (items[-1] < items[-2])
+        door_opened    = same_room & (doors[-1] < doors[-2])
 
         return jnp.array([item_collected, door_opened]).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
-        """Phi = PHI_SCALE * (1 - distance to nearest active item); 0 if the room has none."""
-        px = field(obs, NUM_FEATURES, PLAYER_X)
-        py = field(obs, NUM_FEATURES, PLAYER_Y)
-        ix = field_slice(obs, NUM_FEATURES, ITEMS_X, N_ITEMS)
-        iy = field_slice(obs, NUM_FEATURES, ITEMS_Y, N_ITEMS)
-        active = field_slice(obs, NUM_FEATURES, ITEMS_ACTIVE, N_ITEMS) > 0.5
+    def potential(self, frames):
+        """Phi = PHI_SCALE * (1 - distance to nearest active item, in screen fractions); 0 if the room has none."""
+        px, py = frames.player.x[-1], frames.player.y[-1]
+        items = jax.tree.map(lambda x: x[-1], frames.items)
+        active = items.active > 0
 
-        dist = jnp.where(active, jnp.hypot(ix - px, iy - py), jnp.inf)
+        dist = jnp.where(active, jnp.hypot((items.x - px) / SCREEN_W, (items.y - py) / SCREEN_H), jnp.inf)
         nearest = jnp.min(dist)
         return jnp.where(
             jnp.any(active),

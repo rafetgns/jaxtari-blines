@@ -2,17 +2,10 @@ import functools
 import jax
 import jax.numpy as jnp
 from reward_machines.games.game_rm import GameRM
-from reward_machines.games.utils import build_transitions, field, field_slice
+from reward_machines.games.utils import build_transitions
 
-# Layout verified against jaxatari@c805a3d (BreakoutObservation, 126 per frame):
-# player (x,y,w,h,active,visual_id,state,orientation)@0..7, ball @8..15,
-# blocks@16+108, lives@124, score@125. x/width normalized by 160, y by 210.
-NUM_FEATURES = 126
-PLAYER_X, PLAYER_W = 0, 2
-BALL_X, BALL_Y, BALL_W = 8, 9, 10
-BLOCKS = 16
-NUM_BLOCKS = 108
-LIVES = 124
+NUM_BLOCKS = 108         # 3 rows of ObjectObservations (blocks_bot/mid/top), 36 each
+SCREEN_W = 160.0
 
 
 class BreakoutRm(GameRM):
@@ -68,39 +61,40 @@ class BreakoutRm(GameRM):
     def to_states(self):      return self._to
     def rewards(self):        return self._rew
 
-    def _ball_moved(self, obs, frames_ago):
-        """Did the ball move between frame (frames_ago+1) and frame (frames_ago)?"""
-        dx = field(obs, NUM_FEATURES, BALL_X, frames_ago=frames_ago) - field(obs, NUM_FEATURES, BALL_X, frames_ago=frames_ago + 1)
-        dy = field(obs, NUM_FEATURES, BALL_Y, frames_ago=frames_ago) - field(obs, NUM_FEATURES, BALL_Y, frames_ago=frames_ago + 1)
+    @staticmethod
+    def _bricks_left(frames):
+        """Remaining bricks per frame, (F,)."""
+        return sum(jnp.sum(rows.active, axis=-1) for rows in (frames.blocks_bot, frames.blocks_mid, frames.blocks_top))
+
+    def _ball_moved(self, frames, t):
+        """Did the ball move between frame t-1 and frame t (negative indices, -1 = newest)?"""
+        dx = frames.ball.x[t] - frames.ball.x[t - 1]
+        dy = frames.ball.y[t] - frames.ball.y[t - 1]
         return (jnp.abs(dx) + jnp.abs(dy)) > self.MOVE_EPS
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        lives_now  = field(obs, NUM_FEATURES, LIVES, frames_ago=0)
-        lives_prev = field(obs, NUM_FEATURES, LIVES, frames_ago=1)
-
-        remaining_now  = jnp.sum(field_slice(obs, NUM_FEATURES, BLOCKS, NUM_BLOCKS, frames_ago=0))
-        remaining_prev = jnp.sum(field_slice(obs, NUM_FEATURES, BLOCKS, NUM_BLOCKS, frames_ago=1))
+    def get_events(self, frames):
+        remaining = self._bricks_left(frames)
+        remaining_now, remaining_prev = remaining[-1], remaining[-2]
 
         brick_hit     = remaining_now < remaining_prev
         # Bricks never reappear inside a wall, so an increase = new wall.
         # (prev > 0 so a wall whose empty frame WAS observed is not counted twice)
         wall_cleared  = (remaining_prev > 0) & ((remaining_now == 0) | (remaining_now > remaining_prev))
-        lost_life     = lives_now < lives_prev
+        lost_life     = frames.lives[-1] < frames.lives[-2]
         # Ball starts moving after being still (served).
-        ball_launched = self._ball_moved(obs, 0) & ~self._ball_moved(obs, 1)
+        ball_launched = self._ball_moved(frames, -1) & ~self._ball_moved(frames, -2)
 
         return jnp.array([wall_cleared, brick_hit, lost_life, ball_launched]).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         """Phi = PHI_BRICKS * bricks cleared fraction
-               + PHI_ALIGN * (1 - |paddle centre - ball centre|)."""
-        remaining = jnp.sum(field_slice(obs, NUM_FEATURES, BLOCKS, NUM_BLOCKS, frames_ago=0))
-        cleared = 1.0 - remaining / NUM_BLOCKS
+               + PHI_ALIGN * (1 - |paddle centre - ball centre| / screen width)."""
+        cleared = 1.0 - self._bricks_left(frames)[-1] / NUM_BLOCKS
 
-        paddle_c = field(obs, NUM_FEATURES, PLAYER_X) + 0.5 * field(obs, NUM_FEATURES, PLAYER_W)
-        ball_c = field(obs, NUM_FEATURES, BALL_X) + 0.5 * field(obs, NUM_FEATURES, BALL_W)
-        align = 1.0 - jnp.clip(jnp.abs(paddle_c - ball_c), 0.0, 1.0)
+        paddle_c = frames.player.x[-1] + 0.5 * frames.player.width[-1]
+        ball_c = frames.ball.x[-1] + 0.5 * frames.ball.width[-1]
+        align = 1.0 - jnp.clip(jnp.abs(paddle_c - ball_c) / SCREEN_W, 0.0, 1.0)
 
         return self.PHI_BRICKS * cleared + self.PHI_ALIGN * align

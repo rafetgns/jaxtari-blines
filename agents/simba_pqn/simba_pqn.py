@@ -26,10 +26,11 @@ from jaxtari.wrappers import (
 from agents.run_utils import eval_mod_configs, plan_chunks
 from agents.networks import impala_cnn
 from agents.occam.occam import OCCAMWrapper, log_occam_comparison_video
+from reward_machines.rm_registry import rm_run_suffix, rm_settings, wrap_reward_machine
 from agents.simba_pqn.simba_pqn_eval import evaluate
 
 
-def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=False, occam_mask=None):
+def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=False, occam_mask=None, reward_machine=None):
     mods = list(mods) if mods else None
     if not eval and mods:
         print(f"[WARNING] Training on mods {mods}!")
@@ -71,6 +72,9 @@ def make_env(env_id, mods=None, pixel_based=True, native_downscaling=True, eval=
                     )
                 )
             )
+        if reward_machine is not None:
+            # RM reward (game reward in eval) and the RM state appended to the observation
+            env = wrap_reward_machine(env, env_id, eval=eval, **reward_machine)
         return LogWrapper(env)
 
     return thunk
@@ -160,7 +164,7 @@ def single_run(config: dict):
     config = {k.upper(): v for k, v in config.items() if k != "alg"}
     env_id = config["ENV_ID"]
     pixel_based = config["PIXEL_BASED"]
-    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' if not pixel_based else 'pixel' + ('_occam-' + config['OCCAM_MASK'] if config.get('OCCAM_MASK') else '') + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
+    run_name = f"{env_id}_{config['EXP_NAME']}_{'oc' + rm_run_suffix(config) if not pixel_based else 'pixel' + ('_occam-' + config['OCCAM_MASK'] if config.get('OCCAM_MASK') else '') + ('_impala' if config.get('CNN_TYPE', 'nature') == 'impala' else '')}_{config['SEED']}"
 
     wandb.init(
         project=config.get("PROJECT", "jaxtari-blines"),
@@ -201,7 +205,7 @@ def single_run(config: dict):
         expansion_factor=simba_expansion_factor,
     )
 
-    env = make_env(env_id, list(config.get("TRAIN_MODS") or []), pixel_based, config.get("NATIVE_DOWNSCALING", True), occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None)()
+    env = make_env(env_id, list(config.get("TRAIN_MODS") or []), pixel_based, config.get("NATIVE_DOWNSCALING", True), occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None, reward_machine=rm_settings(config))()
     action_dim = env.action_space().n
     obs_shape = env.observation_space().shape
     if pixel_based:
@@ -348,6 +352,7 @@ def single_run(config: dict):
                     native_downscaling=config.get("NATIVE_DOWNSCALING", True),
                     eval=True,
                     occam_mask=config.get("OCCAM_MASK") if config["PIXEL_BASED"] else None,
+                    reward_machine=rm_settings(config),
                 ),
                 env_id,
                 eval_episodes=10,

@@ -42,5 +42,5 @@ class RewardMachine:
         done = next_state == self.terminal_state
         return next_state, reward, fired_idx, done
 
-    def step(self, current_state, game_obs):
-        return self.step_from_props(current_state, self.get_events(game_obs))
+    def step(self, current_state, frames):
+        return self.step_from_props(current_state, self.get_events(frames))

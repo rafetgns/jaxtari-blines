@@ -21,16 +21,8 @@ class BeamriderRm(GameRM):
     
     """
 
-    # ---------------------------------------------------------
-    # Observation layout
-    # ---------------------------------------------------------
-
-    NUM_FEATURES = 267
-
-    WHITE_UFO_LEFT = 250
-    LIVES = 251
-    SECTOR = 252
-    MOTHERSHIP_STAGE = 265
+    # Stage 5 of `mothership_stage` (0..5) is the mothership explosion after a torpedo hit.
+    MOTHERSHIP_EXPLODING = 5
 
     # ---------------------------------------------------------
     # Propositions
@@ -164,44 +156,24 @@ class BeamriderRm(GameRM):
     # ---------------------------------------------------------
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        frames = obs.reshape(-1, self.NUM_FEATURES)
-
-        prev = frames[-2]
-        now = frames[-1]
-
-        white_ufo_left_prev = prev[self.WHITE_UFO_LEFT]
-        white_ufo_left_now = now[self.WHITE_UFO_LEFT]
-
-        lives_prev = prev[self.LIVES]
-        lives_now = now[self.LIVES]
-
-        sector_prev = prev[self.SECTOR]
-        sector_now = now[self.SECTOR]
-
-        mothership_stage_prev = prev[self.MOTHERSHIP_STAGE]
-        mothership_stage_now = now[self.MOTHERSHIP_STAGE]
+    def get_events(self, frames):
+        ufos_left = frames.white_ufo_left
+        lives = frames.lives
+        sector = frames.sector
+        stage = frames.mothership_stage
 
         # Persistent counters make these events robust against frame skip.
-        lost_life = lives_now < lives_prev
+        lost_life = lives[-1] < lives[-2]
 
-        sector_advanced = sector_now > sector_prev
+        sector_advanced = sector[-1] > sector[-2]
 
-        ufo_destroyed = white_ufo_left_now < white_ufo_left_prev
+        ufo_destroyed = ufos_left[-1] < ufos_left[-2]
 
         # Fires only on the transition from >0 UFOs to zero UFOs.
-        all_ufos_cleared = (
-            (white_ufo_left_prev > 0.0)
-            & (white_ufo_left_now <= 0.0)
-        )
-        # Stage 5 is the mothership explosion after a successful torpedo hit.
-        # In the normalized observation, raw stage 5 corresponds to 1.0.
-        # Detect only the entry into stage 5 so the reward fires once.
+        all_ufos_cleared = (ufos_left[-2] > 0) & (ufos_left[-1] <= 0)
 
-        mothership_hit = (
-                (mothership_stage_prev < 0.9)
-                & (mothership_stage_now > 0.9)
-        )
+        # Detect only the entry into the explosion stage so the reward fires once.
+        mothership_hit = (stage[-2] < self.MOTHERSHIP_EXPLODING) & (stage[-1] >= self.MOTHERSHIP_EXPLODING)
 
         return jnp.array([
             lost_life,

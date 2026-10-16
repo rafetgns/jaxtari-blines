@@ -31,19 +31,12 @@ class PongRm(GameRM):
     def rewards(self):        return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        SCORE_PLAYER_IDX    = 24
-        SCORE_ENEMY_IDX     = 25
-        NUM_OBS             = 26
-        # obs: frame stack of shape (frame_stack, 26)
-        # detect score changes between the two most recent frames
-        scored   = obs[-(NUM_OBS - SCORE_PLAYER_IDX)] > obs[-(2 * NUM_OBS - SCORE_PLAYER_IDX)]
-        conceded = obs[-(NUM_OBS - SCORE_ENEMY_IDX)]  > obs[-(2 * NUM_OBS - SCORE_ENEMY_IDX)]
-
-        # boolean proposition vector [scored, conceded] -> bit-encoded by get_prop_index
+    def get_events(self, frames):
+        # score changes between the two most recent agent steps
+        scored = frames.score_player[-1] > frames.score_player[-2]
+        conceded = frames.score_enemy[-1] > frames.score_enemy[-2]
         return jnp.array([scored, conceded]).astype(jnp.int32)
 
-
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         return jnp.zeros(())

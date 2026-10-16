@@ -23,7 +23,6 @@ GAME_RM_REGISTRY = {
     "tennis": TennisRm,
     "kangaroo": KangarooRm,
     "beamrider": BeamriderRm,
-    "phoenix": PhoenixRm,
     "enduro": EnduroRm,
     "asteroids": AsteroidsRm,
     "mspacman": MsPacmanRm,
@@ -32,3 +31,30 @@ GAME_RM_REGISTRY = {
     "montezumarevenge": MontezumaRm,
     "skiing": SkiingRm,
 }
+
+
+def rm_settings(config: dict):
+    """Reward-machine kwargs for an agent's make_env from the run config, or None.
+
+    REWARD_MACHINE (and RM_SHAPING) apply to object-centric runs only.
+    """
+    if not config.get("REWARD_MACHINE", False) or config.get("PIXEL_BASED", True):
+        return None
+    if config["ENV_ID"] not in GAME_RM_REGISTRY:
+        raise ValueError(f"no reward machine for '{config['ENV_ID']}'; available: {sorted(GAME_RM_REGISTRY)}")
+    return {"use_shaping": bool(config.get("RM_SHAPING", False)), "gamma": float(config.get("GAMMA", 0.99))}
+
+
+def rm_run_suffix(config: dict) -> str:
+    """'_rm' / '_rm-shaped' for run names, '' without a reward machine."""
+    settings = rm_settings(config)
+    if settings is None:
+        return ""
+    return "_rm-shaped" if settings["use_shaping"] else "_rm"
+
+
+def wrap_reward_machine(env, env_id: str, eval: bool = False, **kwargs):
+    """Wrap a flattened object-centric env with the game's reward machine."""
+    from reward_machines.reward_machine_wrapper import RewardMachineWrapper
+
+    return RewardMachineWrapper(env, GAME_RM_REGISTRY[env_id](), eval=eval, **kwargs)

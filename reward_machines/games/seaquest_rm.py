@@ -15,10 +15,9 @@ class SeaquestRm(GameRM):
     # (divers reset 6->0: -6*PHI_PER_DIVER - W_ASCENT ~= -7.5) stays below the
     # explicit +10 reward on t32.
     W_ASCENT = 1.5
-    # Normalised player_y (obs[1]) landmarks, verified empirically:
-    #   surface ~ 46/210 = 0.2190, deepest ~ 141/210 = 0.6714
-    Y_SURFACE = 46.0 / 210.0
-    Y_DEEP = 141.0 / 210.0
+    # player.y landmarks (screen pixels), verified empirically: surface ~46, deepest ~141
+    Y_SURFACE = 46.0
+    Y_DEEP = 141.0
 
     PROP_INDEX = {
         "lost_life": 0,
@@ -97,38 +96,25 @@ class SeaquestRm(GameRM):
     def rewards(self):        return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-        NUM_FEATURES = 284
-
-        # --- field offsets (negative = from end of the whole stack = newest frame) ---
-        OXY, SCORE, LIVES, DIVERS = -4, -3, -2, -1
-        PLAYER_Y = 1 - NUM_FEATURES
-
-        # newest frame values:
-        oxygen_now = obs[OXY]
-        score_now  = obs[SCORE]
-        lives_now  = obs[LIVES]
-        divers_now = obs[DIVERS]
-        player_y_now = obs[PLAYER_Y]
-
-        # previous frame: one full frame (284) earlier
-        score_prev      = obs[SCORE  - NUM_FEATURES]
-        divers_prev     = obs[DIVERS - NUM_FEATURES]
-        lives_prev      = obs[LIVES  - NUM_FEATURES]
-        player_y_prev   = obs[PLAYER_Y - NUM_FEATURES]
+    def get_events(self, frames):
+        oxygen_now = frames.oxygen_level[-1]
+        score_now, score_prev = frames.player_score[-1], frames.player_score[-2]
+        lives_now, lives_prev = frames.lives[-1], frames.lives[-2]
+        divers_now, divers_prev = frames.collected_divers[-1], frames.collected_divers[-2]
+        player_y_now, player_y_prev = frames.player.y[-1], frames.player.y[-2]
 
         scored = score_now > score_prev           # score rose
         lost_life       = lives_now < lives_prev           # a life was lost
-        oxygen_low      = oxygen_now < (12.0 / 255.0)       # ~16 oxygen units, tune this
-        oxygen_full     = oxygen_now > (63.0 / 255.0)       # ~16 oxygen units, tune this
-        surfaced        = (player_y_now < (46.5 / 210.0)) & (player_y_prev > player_y_now)    # player_y == 46 → at surface
-        dove            = (player_y_prev <= (52 / 210.0)) & (player_y_prev < player_y_now) & oxygen_full
+        oxygen_low      = oxygen_now < 12                   # oxygen level 0..64, tune this
+        oxygen_full     = oxygen_now > 63
+        surfaced        = (player_y_now < 46.5) & (player_y_prev > player_y_now)    # player.y == 46 -> at surface
+        dove            = (player_y_prev <= 52) & (player_y_prev < player_y_now) & oxygen_full
         diver_collected = divers_now > divers_prev
         # Fires every frame while sitting at the surface with full oxygen —
         # i.e. nothing left to refill, no reason to stay up. Lowest priority
         # event, used as a per-step penalty against the "stay at surface"
         # local optimum.
-        at_surface_idle = (player_y_now <= (46.5 / 210.0)) & oxygen_full
+        at_surface_idle = (player_y_now <= 46.5) & oxygen_full
 
         return jnp.array([
             lost_life,
@@ -142,7 +128,7 @@ class SeaquestRm(GameRM):
 
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         """Phi(s) = divers held, plus an ascent bonus once all 6 are held.
 
         The diver term densely pulls toward collecting. The gated ascent term
@@ -151,8 +137,8 @@ class SeaquestRm(GameRM):
         it never perturbs the mandatory oxygen loop. Potential-based shaping
         (gamma*Phi' - Phi) is policy-invariant, so this only speeds learning.
         """
-        divers = jnp.clip(obs[-1] * 6.0, 0.0, self.MAX_DIVERS)
-        player_y = obs[1]
+        divers = jnp.clip(frames.collected_divers[-1].astype(jnp.float32), 0.0, self.MAX_DIVERS)
+        player_y = frames.player.y[-1].astype(jnp.float32)
 
         ascent = jnp.clip(
             (self.Y_DEEP - player_y) / (self.Y_DEEP - self.Y_SURFACE), 0.0, 1.0
@@ -160,4 +146,3 @@ class SeaquestRm(GameRM):
         gate6 = (divers >= 5.5).astype(jnp.float32)
 
         return self.PHI_PER_DIVER * divers + gate6 * self.W_ASCENT * ascent
-

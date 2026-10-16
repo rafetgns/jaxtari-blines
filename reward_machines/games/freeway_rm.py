@@ -24,21 +24,6 @@ from reward_machines.games.utils import build_transitions
 
 class FreewayRm(GameRM):
 
-    # ------------------------------------------------------------------
-    # Observation layout
-    # ------------------------------------------------------------------
-    #
-    # 4 stacked frames = 352 features
-    # 1 frame          = 88 features
-    #
-    # chicken.x = index 0
-    # chicken.y = index 1
-    #
-    NUM_FEATURES = 88
-    CHICKEN_Y = 1
-
-    Y_SCALE = 210.0
-
     # Progress thresholds in original screen coordinates.
     #
     # The chicken starts around y=187 and moves upward, so smaller y means
@@ -141,15 +126,9 @@ class FreewayRm(GameRM):
         return self._rew
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def get_events(self, obs):
-
-        frames = obs.reshape(-1, self.NUM_FEATURES)
-
-        now = frames[-1]
-        prev = frames[-2]
-
-        y_now = now[self.CHICKEN_Y] * self.Y_SCALE
-        y_prev = prev[self.CHICKEN_Y] * self.Y_SCALE
+    def get_events(self, frames):
+        y_now = frames.chicken.y[-1].astype(jnp.float32)
+        y_prev = frames.chicken.y[-2].astype(jnp.float32)
 
         # Chicken moves upward when y decreases.
         reached_lower = (
@@ -184,9 +163,8 @@ class FreewayRm(GameRM):
         ).astype(jnp.int32)
 
     @functools.partial(jax.jit, static_argnums=(0,))
-    def potential(self, obs):
+    def potential(self, frames):
         """Phi(s) = PHI_SCALE * progress of the chicken towards the top, in [0, PHI_SCALE]."""
-        now = obs.reshape(-1, self.NUM_FEATURES)[-1]
-        y = now[self.CHICKEN_Y] * self.Y_SCALE
+        y = frames.chicken.y[-1].astype(jnp.float32)
         progress = (self.Y_START - y) / (self.Y_START - self.Y_TOP)
         return self.PHI_SCALE * jnp.clip(progress, 0.0, 1.0)

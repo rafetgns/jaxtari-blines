@@ -26,10 +26,10 @@ def main(config):
             from agents.c51.c51 import single_run
         elif alg == "SCOBOTS":
             from agents.scobots.scobots import single_run
-        elif alg == "DOUBLE_DQN":
-            from agents.double_dqn.dqn import single_run
+        elif alg == "RM_DQN":
+            from agents.rm_dqn.rm_dqn import single_run
         elif alg == "HRM":
-            from agents.double_dqn_hrm.hrm import single_run
+            from agents.hrm.hrm import single_run
         elif alg == "APQN":
             from agents.apqn.apqn import single_run
         elif alg == "DROQ":
