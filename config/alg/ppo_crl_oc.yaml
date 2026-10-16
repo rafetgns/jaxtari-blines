@@ -1,27 +1,20 @@
 ALG: PPO_CRL
-EXP_NAME: seaquest3
+EXP_NAME: ppo_crl
 
-TRACK: True
 CAPTURE_VIDEO: False
 VIDEO_AT_END: True  # True: capture videos only at the end of training on a task
 
 EVAL_DURING_TRAIN: True
 EVAL_EVERY: 102
-EVAL_EPISODES: 100
+EVAL_EPISODES: 100  # per seen task; BWT/FM are differences of evals (other agents use 10)
 
 PIXEL_BASED: False
 NATIVE_DOWNSCALING: True
-PIXEL_RESIZE_SHAPE: [84, 84]
-SMOOTH_IMAGE: False
-FRAME_STACK: 4
-
-SAVE_MODEL: False
-UPLOAD_MODEL: False
-HF_ENTITY: ""
 
 LEARNING_RATE: 0.00025
 NUM_ENVS: 512
 NUM_STEPS: 64
+SCAN_STEPS: 1  # updates per jitted chunk (one wandb log per update)
 ANNEAL_LR: True
 GAMMA: 0.99
 GAE_LAMBDA: 0.95
@@ -29,11 +22,9 @@ NUM_MINIBATCHES: 8
 UPDATE_EPOCHS: 4
 NORM_ADV: True
 CLIP_COEF: 0.1
-CLIP_VLOSS: False
 ENT_COEF: 0.01
 VF_COEF: 0.5
 MAX_GRAD_NORM: 0.5
-TARGET_KL: null
 
 # =================================================================
 # CL Specific Configs
@@ -42,19 +33,19 @@ TARGET_KL: null
 TASKS: [seaquest, seaquest, seaquest] # replaces ENV_ID
 TIMESTEPS_PER_TASK: 10000000  # replaces TOTAL_TIMESTEPS
 
-# mods applied during training, for each environment
-TRAIN_MODS: 
+# mods applied during training, one list per task
+TASK_TRAIN_MODS: 
   - []
   - [unlimited_oxygen]
   - [no_divers]
 
-# sets of mods applied during evaluation, for each environment
-EVAL_MODS: 
+# mod lists each task is evaluated on (default: its train mods)
+TASK_EVAL_MODS: 
   - [ [] ]
   - [ [unlimited_oxygen] ]
   - [ [no_divers] ]
 
-CL_METHOD: ewc  # ewc, agem, packnet
+CL_METHOD: ewc  # none, ewc, agem, packnet
 
 # EWC
 EWC_DECAY: 0.9  # Decay for Online EWC
