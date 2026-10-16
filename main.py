@@ -50,6 +50,8 @@ def main(config):
             from agents.ddpg.ddpg import single_run
         elif alg == "CROSSQ":
             from agents.crossq.crossq import single_run
+        elif alg == "AGENT57":
+            from agents.agent57.agent57 import single_run
         else:
             raise ValueError(f"Unknown ALG: {alg}")
 

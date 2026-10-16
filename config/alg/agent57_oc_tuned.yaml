@@ -1,0 +1,81 @@
+# agent57_oc_tuned: the settings every reported run actually used.
+# Copied from agent57_oc_original.yaml; only the [ours] lines below differ.
+# TOTAL_TIMESTEPS stays 10M; the 2M games override it on the command line.
+#
+# Agent57 — object-centric observations.
+#
+# Provenance of each value:
+#   [R2D2]   Kapturowski et al., "Recurrent Experience Replay in Distributed
+#            Reinforcement Learning", ICLR 2019.
+#            https://openreview.net/forum?id=r1lyTjAqYX
+#   [ours]   our own choice, not from any paper —  reduced for VRAM.
+#            Each of these needs a line in the report's adaptations section.
+
+ALG: AGENT57
+EXP_NAME: agent57
+STAGE: r2d2                      # [ours] r2d2 | ngu | split_q | agent57
+
+PIXEL_BASED: False
+NATIVE_DOWNSCALING: True
+
+TOTAL_TIMESTEPS: 10000000
+BUFFER_SIZE: 100000              # [ours] matches the DQN/Rainbow baselines
+LEARNING_STARTS: 80000           # [ours] matches the DQN/Rainbow baselines
+TARGET_NETWORK_FREQUENCY: 2500   # [R2D2] counts LEARNER steps, not env steps
+SCAN_STEPS: 64                   # [ours] 8 envs x 4 steps x 64 = one log line per ~2k env steps
+GRADIENT_STEPS: 1               
+
+NUM_ENVS: 8                     
+LEARNING_RATE: 1e-4             
+ADAM_EPS: 1e-3                  
+ADAM_B1: 0.9                    
+ADAM_B2: 0.999                  
+
+BATCH_SIZE: 32                   
+TRAIN_FREQUENCY: 4
+GAMMA: 0.99                      # same as dqn. R2D2 uses 0.997 -> report adaptation
+DOUBLE_Q: True                   #//Added By Aman , you can override it from the command line for the OFF experiment: +alg.DOUBLE_Q=false
+TAU: 1.0
+
+# --- sequence replay  ------------------------
+
+SEQUENCE_LENGTH: 80              # [R2D2] m = 80 observations per sequence
+SEQUENCE_PERIOD: 40              # [R2D2] stride between sequence starts, giving the paper's 40-step overlap
+BURN_IN_LENGTH: 40               # [R2D2] paper uses l = 40
+N_STEP: 5                        # [R2D2] n-step double Q-learning
+PRIORITY_EXPONENT: 0.9           # [R2D2] rainbow uses 0.5
+PRIORITY_ETA: 0.9                # [R2D2] priority = eta*max|TD| + (1-eta)*mean|TD|
+IMPORTANCE_SAMPLING_EXPONENT: 0.6  # [R2D2] fixed 0.6
+VALUE_RESCALING_EPSILON: 1e-3    # [R2D2] h(x) = sign(x)*(sqrt(|x|+1)-1) + eps*x . Use rlax's signed_hyperbolic / signed_parabolic.
+
+# --- network architecture -------------------------------------------------
+# [R2D2] Table 2: torso -> LSTM(512) -> dueling value and advantage heads,
+# each with a 512 hidden layer. No pre- or post-LSTM linear layers.
+
+
+MLP_WIDTH: 512                   # OC torso
+MLP_DEPTH: 2                     # Pixel mode uses the CNN torso.
+HIDDEN_SIZE: 512                 # [R2D2] LSTM hidden units
+DUELING_UNITS: 512               # [R2D2] each of the V and A heads
+
+START_E: 1.0                     # same as dqn: linear 1.0 -> 0.01
+END_E: 0.01                      #   over the first 10% of TOTAL_TIMESTEPS.
+EXPLORATION_FRACTION: 0.10       #   R2D2 uses its own epsilon scheme -> report adaptation
+
+# --- NGU  ---------------------------------------------------------
+EPISODIC_MEMORY_SIZE: 2048      # [ours] paper 30000; k-NN is O(M) per env step
+NUM_NEIGHBOURS: 10              # [NGU] Table 6
+KERNEL_EPSILON: 0.0001          # [NGU] Table 6 (section 2 text says 1e-3)
+CLUSTER_DISTANCE: 0.008         # [NGU] Table 6
+PSEUDO_COUNT_C: 0.001           # [NGU] Table 6
+MAX_SIMILARITY: 8.0             # [NGU] Table 6; cannot trigger with k = 10
+INTRINSIC_CLIP_L: 5.0           # [NGU] Table 6
+# --- NGU arms ----------------------------------------------------------------
+NUM_ARMS: 8                     # [ours] paper 32; one per env with NUM_ENVS=8
+BETA_MAX: 0.3                   # [NGU]
+GAMMA_MAX: 0.99                 # [ours] paper 0.997; equals GAMMA so arm 0 matches the R2D2 runs
+GAMMA_MIN: 0.98                 # [ours] paper 0.99; shifted down to keep the horizon spread
+# --- Agent57 meta-controller (stage 4) ---------------------------------------
+UCB_WINDOW: 30                  # [ours] paper 160; shorter runs, fewer episodes
+UCB_BETA: 1.0                   # [Agent57] Table 3
+UCB_EPSILON: 0.5                # [Agent57] Table 3: random arm with this probability

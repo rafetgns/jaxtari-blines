@@ -1,0 +1,61 @@
+# Agent57 — pixel-based observations.
+#
+# Provenance of each value:
+#   [R2D2]   Kapturowski et al., "Recurrent Experience Replay in Distributed
+#            Reinforcement Learning", ICLR 2019.
+#            https://openreview.net/forum?id=r1lyTjAqYX
+#   [ours]   our own choice, not from any paper — usually reduced for VRAM.
+#            Each of these needs a line in the report's adaptations section.
+#   no tag   copied unchanged from the existing dqn/rainbow configs, so that the
+#            stage-1 comparison ("R2D2 beats DQN at equal steps") differs only in
+#            the algorithm and not in the experimental setup.
+
+ALG: AGENT57
+EXP_NAME: agent57
+STAGE: r2d2                      # [ours] r2d2 | ngu | split_q | agent57
+
+PIXEL_BASED: True
+NATIVE_DOWNSCALING: True
+
+TOTAL_TIMESTEPS: 10000000
+BUFFER_SIZE: 100000              # ~2.8 GB. Matches dqn_rgb / rainbow_rgb, which both comment out the 1e6 line for the same reason.
+LEARNING_STARTS: 80000
+TARGET_NETWORK_FREQUENCY: 2500   # [R2D2] counts LEARNER steps, not env steps
+SCAN_STEPS: 1000
+GRADIENT_STEPS: 1                # -1 == n_envs * train_freq
+
+NUM_ENVS: 1
+LEARNING_RATE: 1e-4              
+ADAM_EPS: 1e-3                   
+ADAM_B1: 0.9                     # [R2D2] same as optax's default — listed
+ADAM_B2: 0.999                   #  explicitly so the config is a complete record of the paper's optimiser settings. Must be passed to optax.adam in single_run, dqn/rainbow don't pass betas at all.
+
+BATCH_SIZE: 64                   # [R2D2] 64 SEQUENCES, not transitions: 64 x 80 = 5120 transitions per update vs DQN's 32. Note this in the report.
+TRAIN_FREQUENCY: 4
+GAMMA: 0.997                     # [R2D2] Table 2
+TAU: 1.0
+# --- sequence replay  ------------------------
+
+SEQUENCE_LENGTH: 80              # [R2D2] m = 80 observations per sequence
+SEQUENCE_PERIOD: 40              # [R2D2] stride between sequence starts, giving the paper's 40-step overlap
+BURN_IN_LENGTH: 40               # [R2D2] paper uses l = 40
+N_STEP: 5                        # [R2D2] n-step double Q-learning
+PRIORITY_EXPONENT: 0.9           # [R2D2] rainbow uses 0.5
+PRIORITY_ETA: 0.9                # [R2D2] priority = eta*max|TD| + (1-eta)*mean|TD|
+IMPORTANCE_SAMPLING_EXPONENT: 0.6  # [R2D2] fixed 0.6
+VALUE_RESCALING_EPSILON: 1e-3    # [R2D2] h(x) = sign(x)*(sqrt(|x|+1)-1) + eps*x . Use rlax's signed_hyperbolic / signed_parabolic.
+
+# --- network architecture -------------------------------------------------
+# [R2D2] Table 2: same 3-layer conv torso as DQN (32/64/64, kernels 8/4/3,
+# strides 4/2/1), then LSTM(512), then dueling value and advantage heads,
+# each with a 512 hidden layer. No pre- or post-LSTM linear layers.
+#
+# An earlier draft used a 4-layer torso taken from Schaul et al. 2022 — that
+# is that paper's own R2D2 variant, not R2D2.
+
+HIDDEN_SIZE: 512                 # [R2D2] LSTM hidden units
+DUELING_UNITS: 512              # [R2D2] each of the V and A heads
+
+START_E: 1.0                     # same as dqn: linear 1.0 -> 0.01
+END_E: 0.01                      #   over the first 10% of TOTAL_TIMESTEPS.
+EXPLORATION_FRACTION: 0.10       #   R2D2 uses its own epsilon scheme -> report adaptation

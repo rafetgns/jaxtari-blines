@@ -1,0 +1,57 @@
+# Agent57 — object-centric observations.
+#
+# Provenance of each value:
+#   [R2D2]   Kapturowski et al., "Recurrent Experience Replay in Distributed
+#            Reinforcement Learning", ICLR 2019.
+#            https://openreview.net/forum?id=r1lyTjAqYX
+#   [ours]   our own choice, not from any paper —  reduced for VRAM.
+#            Each of these needs a line in the report's adaptations section.
+
+ALG: AGENT57
+EXP_NAME: agent57
+STAGE: r2d2                      # [ours] r2d2 | ngu | split_q | agent57
+
+PIXEL_BASED: False
+NATIVE_DOWNSCALING: True
+
+TOTAL_TIMESTEPS: 10000000
+BUFFER_SIZE: 4000000             # [R2D2] 4e6 observations; does NOT fit 11 GB with stored LSTM state
+LEARNING_STARTS: 80000
+TARGET_NETWORK_FREQUENCY: 2500   # [R2D2] counts LEARNER steps, not env steps
+SCAN_STEPS: 1000
+GRADIENT_STEPS: 1           
+
+NUM_ENVS: 1
+LEARNING_RATE: 1e-4             
+ADAM_EPS: 1e-3                  
+ADAM_B1: 0.9                    
+ADAM_B2: 0.999                  
+
+BATCH_SIZE: 64                   # [R2D2] 64 SEQUENCES, not transitions: 64 x 80 = 5120 transitions per update vs DQN's 32. Note this in the report.
+TRAIN_FREQUENCY: 4
+GAMMA: 0.997                     # [R2D2] Table 2
+TAU: 1.0
+
+# --- sequence replay  --------------------------------------------------------
+
+SEQUENCE_LENGTH: 80              # [R2D2] m = 80 observations per sequence
+SEQUENCE_PERIOD: 40              # [R2D2] stride between sequence starts, giving the paper's 40-step overlap
+BURN_IN_LENGTH: 40               # [R2D2] paper uses l = 40
+N_STEP: 5                        # [R2D2] n-step double Q-learning
+PRIORITY_EXPONENT: 0.9           # [R2D2] rainbow uses 0.5
+PRIORITY_ETA: 0.9                # [R2D2] priority = eta*max|TD| + (1-eta)*mean|TD|
+IMPORTANCE_SAMPLING_EXPONENT: 0.6  # [R2D2] fixed 0.6
+VALUE_RESCALING_EPSILON: 1e-3    # [R2D2] h(x) = sign(x)*(sqrt(|x|+1)-1) + eps*x . Use rlax's signed_hyperbolic / signed_parabolic.
+
+# --- network architecture -------------------------------------------------
+# [R2D2] Table 2: torso -> LSTM(512) -> dueling value and advantage heads,
+# each with a 512 hidden layer. No pre- or post-LSTM linear layers.
+
+MLP_WIDTH: 512                   # OC torso
+MLP_DEPTH: 2                     # Pixel mode uses the CNN torso.
+HIDDEN_SIZE: 512                 # [R2D2] LSTM hidden units
+DUELING_UNITS: 512               # [R2D2] each of the V and A heads
+
+START_E: 1.0                     # same as dqn: linear 1.0 -> 0.01
+END_E: 0.01                      #   over the first 10% of TOTAL_TIMESTEPS.
+EXPLORATION_FRACTION: 0.10       #   R2D2 uses its own epsilon scheme -> report adaptation

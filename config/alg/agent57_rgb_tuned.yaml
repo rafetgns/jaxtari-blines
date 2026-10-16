@@ -1,0 +1,72 @@
+# Agent57 — pixel-based observations.
+#
+# Provenance of each value:
+#   [R2D2]   Kapturowski et al., "Recurrent Experience Replay in Distributed
+#            Reinforcement Learning", ICLR 2019.
+#            https://openreview.net/forum?id=r1lyTjAqYX
+#   [ours]   our own choice, not from any paper — usually reduced for VRAM.
+#            Each of these needs a line in the report's adaptations section.
+#   no tag   copied unchanged from the existing dqn/rainbow configs, so that the
+#            stage-1 comparison ("R2D2 beats DQN at equal steps") differs only in
+#            the algorithm and not in the experimental setup.
+
+ALG: AGENT57
+EXP_NAME: agent57
+STAGE: r2d2                      #
+
+PIXEL_BASED: True
+NATIVE_DOWNSCALING: True
+
+TOTAL_TIMESTEPS: 10000000
+BUFFER_SIZE: 50000               
+LEARNING_STARTS: 40000          
+TARGET_NETWORK_FREQUENCY: 2500   
+SCAN_STEPS: 64                   
+GRADIENT_STEPS: 1                
+
+NUM_ENVS: 8                     
+LEARNING_RATE: 1e-4              
+ADAM_EPS: 1e-3                   
+ADAM_B1: 0.9                     
+ADAM_B2: 0.999                  
+BATCH_SIZE: 32                  
+TRAIN_FREQUENCY: 4
+GAMMA: 0.99                      
+TAU: 1.0
+# --- sequence replay  ------------------------
+
+SEQUENCE_LENGTH: 80            
+SEQUENCE_PERIOD: 40              
+BURN_IN_LENGTH: 40              
+N_STEP: 5                      
+PRIORITY_EXPONENT: 0.9          
+PRIORITY_ETA: 0.9               
+IMPORTANCE_SAMPLING_EXPONENT: 0.6  
+VALUE_RESCALING_EPSILON: 1e-3    
+
+# --- network architecture -------------------------------------------------
+
+HIDDEN_SIZE: 512               
+DUELING_UNITS: 512              
+START_E: 1.0                    
+END_E: 0.01                      
+EXPLORATION_FRACTION: 0.10      
+
+# --- NGU (stage 2) ---------------------------------------------------------
+EPISODIC_MEMORY_SIZE: 2048     
+NUM_NEIGHBOURS: 10             
+KERNEL_EPSILON: 0.0001         
+CLUSTER_DISTANCE: 0.008         
+PSEUDO_COUNT_C: 0.001           
+MAX_SIMILARITY: 8.0             
+INTRINSIC_CLIP_L: 5.0           
+# --- NGU arms ----------------------------------------------------------------
+NUM_ARMS: 8                     
+BETA_MAX: 0.3                   
+GAMMA_MAX: 0.99                
+GAMMA_MIN: 0.98  
+
+# --- Agent57 meta-controller---------------------------------------
+UCB_WINDOW: 30                  
+UCB_BETA: 1.0                   
+UCB_EPSILON: 0.5                
