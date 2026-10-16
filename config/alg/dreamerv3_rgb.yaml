@@ -1,0 +1,71 @@
+# DreamerV3 — pixel-based observations.
+#
+# Provenance of each value:
+#   [dv3]    official danijar/dreamerv3 configs.yaml defaults (Hafner et al., Nature 2025);
+#            model sizes from its size12m preset.
+#   [ours]   our own choice, not from the paper — usually reduced for (V)RAM or to match
+#            the other agents in this repo.
+
+ALG: DREAMERV3
+EXP_NAME: dreamerv3
+
+PIXEL_BASED: True
+NATIVE_DOWNSCALING: True
+IMAGE_SIZE: 64                   # [dv3] one grayscale frame per step, no stacking
+CLIP_REWARD: False               # [dv3] symlog two-hot handles the reward scale
+
+TOTAL_TIMESTEPS: 10000000        # [ours] same budget as the other agents (agent steps, 4 frames each)
+NUM_ENVS: 16                     # [dv3]
+TRAIN_RATIO: 32                  # [dv3] replayed steps per env step
+BATCH_SIZE: 16                   # [dv3]
+BATCH_LENGTH: 64                 # [dv3] (+1 context step)
+BUFFER_SIZE: 500000              # [ours] dv3 uses 5e6; ~8 KB per record here (frame + latent)
+LEARNING_STARTS: 5000            # [ours]
+SCAN_STEPS: 1000                 # updates per jitted chunk
+
+# model (size12m)
+DETER: 2048                      # [dv3]
+HIDDEN: 256                      # [dv3]
+STOCH: 32                        # [dv3]
+CLASSES: 16                      # [dv3]
+BLOCKS: 8                        # [dv3]
+DEPTH: 16                        # [dv3]
+UNITS: 256                       # [dv3]
+CNN_MULTS: [2, 3, 4, 4]          # [dv3]
+KERNEL: 5                        # [dv3]
+ENC_LAYERS: 3                    # [dv3] MLP encoder/decoder layers (vector inputs)
+HEAD_LAYERS: 1                   # [dv3] reward and continue heads
+AC_LAYERS: 3                     # [dv3] actor and critic
+NUM_BINS: 255                    # [dv3]
+UNIMIX: 0.01                     # [dv3]
+
+# optimiser: AGC + LaProp
+LEARNING_RATE: 4e-5              # [dv3]
+AGC: 0.3                         # [dv3]
+EPS: 1e-20                       # [dv3]
+BETA1: 0.9                       # [dv3]
+BETA2: 0.999                     # [dv3]
+WARMUP: 1000                     # [dv3] gradient steps
+
+# losses
+FREE_NATS: 1.0                   # [dv3]
+REC_SCALE: 1.0                   # [dv3]
+REW_SCALE: 1.0                   # [dv3]
+CON_SCALE: 1.0                   # [dv3]
+DYN_SCALE: 1.0                   # [dv3]
+REP_SCALE: 0.1                   # [dv3]
+POLICY_SCALE: 1.0                # [dv3]
+VALUE_SCALE: 1.0                 # [dv3]
+REPVAL_SCALE: 0.3                # [dv3]
+
+# actor-critic
+GAMMA: 0.997                     # [dv3] horizon 333
+GAE_LAMBDA: 0.95                 # [dv3]
+IMAG_HORIZON: 15                 # [dv3]
+ACTOR_ENT: 3e-4                  # [dv3]
+SLOW_CRITIC_RATE: 0.02           # [dv3]
+SLOW_REG: 1.0                    # [dv3]
+RETNORM_RATE: 0.01               # [dv3]
+RETNORM_LIMIT: 1.0               # [dv3]
+RETNORM_LOW: 5                   # [dv3]
+RETNORM_HIGH: 95                 # [dv3]
