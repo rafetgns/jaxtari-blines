@@ -25,7 +25,7 @@ from jaxtari.wrappers import (
     PixelObsWrapper,
 )
 from agents.pqn.pqn_eval import evaluate
-from agents.run_utils import eval_mod_configs, plan_chunks, rm_metrics
+from agents.run_utils import eval_mod_configs, log_model_artifact, plan_chunks, rm_metrics
 from agents.networks import impala_cnn
 from agents.occam.occam import OCCAMWrapper, log_occam_comparison_video
 from reward_machines.rm_registry import rm_run_suffix, rm_settings, wrap_reward_machine
@@ -290,7 +290,7 @@ def single_run(config: dict):
         new_carry = (q_state, env_state, next_obs, next_done, key, global_step)
         return new_carry, (infos, loss[-1, -1], q_mean[-1, -1])
 
-    def save_and_eval(q_params, step_count):
+    def save_and_eval(q_params, step_count, final=False):
         if config.get("SAVE_PATH") is not None:
             save_dir = os.path.join(config["SAVE_PATH"], run_name)
             os.makedirs(save_dir, exist_ok=True)
@@ -298,6 +298,8 @@ def single_run(config: dict):
             with open(model_path, "wb") as f:
                 f.write(flax.serialization.to_bytes([config, q_params]))
             print(f"model saved to {model_path}")
+            if final and config.get("WANDB_SAVE_MODEL", False):
+                log_model_artifact(model_path, run_name)
 
         print(f"running evaluation at step {step_count}...")
         metrics = {}
@@ -324,7 +326,8 @@ def single_run(config: dict):
             if config.get("CAPTURE_VIDEO", False):
                 # Instantiate a clean renderer immune to the training env's downscaling
                 clean_renderer = jaxtari.make(env_id, mods=mods_cfg).renderer
-                frames = jnp.transpose(jax.vmap(clean_renderer.render)(env_states), (0, 3, 1, 2))
+                video_states = jax.tree.map(lambda x: x[: config.get("VIDEO_MAX_FRAMES")], env_states)
+                frames = jnp.transpose(jax.vmap(clean_renderer.render)(video_states), (0, 3, 1, 2))
                 video = wandb.Video(np.array(frames), fps=30, format="mp4")
                 wandb.log({f"eval/video_{mod_label}": video}, step=step_count)
                 print(f"Video (eval) logged to wandb with {frames.shape[0]} frames ({mod_label}).")
@@ -373,6 +376,6 @@ def single_run(config: dict):
             f"SPS {metrics['charts/SPS']}"
         )
 
-    eval_metrics = save_and_eval(carry[0].params, global_step + 1)
+    eval_metrics = save_and_eval(carry[0].params, global_step + 1, final=True)
     wandb.finish()
     return eval_metrics

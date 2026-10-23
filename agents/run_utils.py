@@ -12,6 +12,16 @@ def plan_chunks(total_steps: int, steps_per_update: int, scan_steps: int):
     return scan_steps, num_chunks, scan_steps * steps_per_update
 
 
+def log_model_artifact(model_path: str, run_name: str):
+    """Upload a saved checkpoint to the active wandb run as a model artifact."""
+    import wandb
+
+    artifact = wandb.Artifact(name=f"model-{run_name}", type="model")
+    artifact.add_file(model_path)
+    wandb.log_artifact(artifact)
+    print(f"model uploaded to wandb as artifact model-{run_name}")
+
+
 def eval_mod_configs(config: dict):
     """(mods, label) pairs to evaluate on: the default env plus each eval mod."""
     eval_mods = list(config["EVAL_MODS"] or config["TRAIN_MODS"] or [])
@@ -59,3 +69,42 @@ def rm_metrics(infos) -> dict:
         metrics[f"rm/return_u{u}"] = float(state_returns[u])
         metrics[f"rm/steps_u{u}"] = float(state_steps[u])
     return metrics
+
+
+def _git_commit(path: str) -> str | None:
+    """HEAD of the git repo containing *path*, suffixed with '-dirty' on uncommitted changes."""
+    import subprocess
+
+    try:
+        git = ["git", "-C", path]
+        commit = subprocess.run([*git, "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run([*git, "status", "--porcelain", "--untracked-files=no"],
+                               capture_output=True, text=True, check=True).stdout.strip()
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return commit + ("-dirty" if dirty else "")
+
+
+def code_versions() -> dict:
+    """Commits of jaxtari-blines and the installed jaxtari, for logging with each run.
+
+    jaxtari is resolved from its import location (editable checkout); for a
+    non-editable git install the commit recorded by the installer is used instead.
+    """
+    import json
+    import os
+    from importlib import metadata
+
+    import jaxtari
+
+    jaxtari_commit = _git_commit(os.path.dirname(jaxtari.__file__))
+    if jaxtari_commit is None:
+        try:
+            direct_url = json.loads(metadata.distribution("jaxtari").read_text("direct_url.json") or "{}")
+            jaxtari_commit = direct_url.get("vcs_info", {}).get("commit_id")
+        except metadata.PackageNotFoundError:
+            pass
+    return {
+        "BLINES_COMMIT": _git_commit(os.path.dirname(os.path.abspath(__file__))),
+        "JAXTARI_COMMIT": jaxtari_commit,
+    }

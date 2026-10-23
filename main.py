@@ -1,11 +1,14 @@
 import hydra
 from omegaconf import OmegaConf
 
+from agents.run_utils import code_versions
+
 
 @hydra.main(version_base=None, config_path="./config", config_name="config")
 def main(config):
     config = OmegaConf.to_container(config, resolve=True)
     merged_config = {**config, **config.get("alg", {})}
+    merged_config.update(code_versions())
     print("Config:\n", OmegaConf.to_yaml(OmegaConf.create(config)))
     n_seeds = merged_config.get("NUM_SEEDS", 1)
     starting_seed = merged_config.get("SEED", 0)

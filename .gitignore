@@ -12,6 +12,7 @@ wheels/
 # outputs and logging
 models/
 outputs/
+logs/
 wandb/
 .DS_Store
 

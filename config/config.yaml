@@ -6,10 +6,12 @@ SEED: 1
 # wandb params
 WANDB_MODE: "online"  # set to online to activate wandb
 ENTITY: "jaxatari"
-PROJECT: "jaxtari-blines"
+PROJECT: "jaxtari-blines-cameraready"
 
 # where to save the params (if None, will not save)
 SAVE_PATH: "./models"
+# upload the final checkpoint to wandb as a model artifact (needs SAVE_PATH)
+WANDB_SAVE_MODEL: False
 # upload to huggingface
 UPLOAD_MODEL: False
 
@@ -26,6 +28,8 @@ EVAL_DURING_TRAIN: False
 EVAL_EVERY: 100 # measured in alg iterations, not env steps
 # whether to capture a video during eval
 CAPTURE_VIDEO: True
+# cap on the eval video length in frames (null = whole first episode); encoding is CPU-bound
+VIDEO_MAX_FRAMES: null
 
 # conv encoder for pixel-based runs: "nature" (Mnih et al., 2015) or "impala" (Espeholt et al., 2018); ignored for OC
 CNN_TYPE: nature
