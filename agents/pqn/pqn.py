@@ -356,11 +356,25 @@ def single_run(config: dict):
         chunk_start = time.perf_counter()
         carry, (infos, loss, q_mean) = compiled(carry)
         global_step = int(carry[-1])
+        # one wandb point per update of the chunk, not only its last one
+        # (with large NUM_ENVS a whole run can fit in a single chunk)
+        returns = np.asarray(infos["returned_episode_returns"].mean(axis=(1, 2)))
+        lengths = np.asarray(infos["returned_episode_lengths"].mean(axis=(1, 2)))
+        loss, q_mean = np.asarray(loss), np.asarray(q_mean)
+        for i in range(scan_steps - 1):
+            step = global_step - (scan_steps - 1 - i) * batch_size
+            wandb.log({
+                "charts/avg_episodic_return": float(returns[i]),
+                "charts/avg_episodic_length": float(lengths[i]),
+                "losses/td_loss": float(loss[i]),
+                "losses/q_values": float(q_mean[i]),
+                "charts/global_step": step,
+            }, step=step)
         metrics = {
-            "charts/avg_episodic_return": float(infos["returned_episode_returns"][-1].mean()),
-            "charts/avg_episodic_length": float(infos["returned_episode_lengths"][-1].mean()),
-            "losses/td_loss": loss[-1].item(),
-            "losses/q_values": q_mean[-1].item(),
+            "charts/avg_episodic_return": float(returns[-1]),
+            "charts/avg_episodic_length": float(lengths[-1]),
+            "losses/td_loss": float(loss[-1]),
+            "losses/q_values": float(q_mean[-1]),
             "charts/SPS": int(global_step / (time.perf_counter() - run_time)),
             "charts/SPS_update": int(steps_per_chunk / (time.perf_counter() - chunk_start)),
             "charts/time": time.perf_counter() - run_time,

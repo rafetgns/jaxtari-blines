@@ -3,12 +3,20 @@ def plan_chunks(total_steps: int, steps_per_update: int, scan_steps: int):
 
     Returns (scan_steps, num_chunks, steps_per_chunk). Only whole chunks are run,
     so every agent sees exactly num_chunks * steps_per_chunk <= total_steps env steps.
+    Of chunks of exactly `scan_steps` updates and equal chunks of at most `scan_steps`
+    updates, the split that drops fewer updates is used, so fewer than
+    min(scan_steps, num_chunks) updates are dropped.
     """
     num_updates = int(total_steps) // steps_per_update  # YAML may give e.g. 1e7 as a float
     if num_updates == 0:
         raise ValueError(f"TOTAL_TIMESTEPS={total_steps} is smaller than one update ({steps_per_update} steps)")
-    scan_steps = min(scan_steps, num_updates)
-    num_chunks = num_updates // scan_steps
+    full = min(scan_steps, num_updates)
+    num_chunks = -(-num_updates // full)  # ceil
+    equal = num_updates // num_chunks
+    if equal * num_chunks > full * (num_updates // full):
+        scan_steps = equal
+    else:
+        scan_steps, num_chunks = full, num_updates // full
     return scan_steps, num_chunks, scan_steps * steps_per_update
 
 

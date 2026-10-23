@@ -6,7 +6,7 @@ NATIVE_DOWNSCALING: True
 
 TOTAL_TIMESTEPS: 50000000 
 NUM_STEPS: 32
-SCAN_STEPS: 1000
+SCAN_STEPS: 10 # updates per jitted chunk (every update is logged); ~10% faster than 1 here, drops <=5 of ~2.4k-9.8k updates
 
 NUM_ENVS: 128
 LEARNING_RATE: 2.5e-4

@@ -423,15 +423,23 @@ def single_run(config: dict):
         chunk_start = time.perf_counter()
         carry, (infos, (loss, pg_loss, v_loss, entropy_loss, approx_kl), learning_rate) = compiled(carry)
         global_step = int(carry[-1])
+        # one wandb point per update of the chunk, not only its last one
+        update_metrics = {
+            "charts/avg_episodic_return": infos["returned_episode_returns"].mean(axis=(1, 2)),
+            "charts/avg_episodic_length": infos["returned_episode_lengths"].mean(axis=(1, 2)),
+            "charts/learning_rate": learning_rate,
+            "losses/value_loss": v_loss,
+            "losses/policy_loss": pg_loss,
+            "losses/entropy": entropy_loss,
+            "losses/approx_kl": approx_kl,
+            "losses/loss": loss,
+        }
+        update_metrics = {k: np.asarray(v) for k, v in update_metrics.items()}
+        for i in range(scan_steps - 1):
+            step = global_step - (scan_steps - 1 - i) * batch_size
+            wandb.log({**{k: float(v[i]) for k, v in update_metrics.items()}, "charts/global_step": step}, step=step)
         metrics = {
-            "charts/avg_episodic_return": float(infos["returned_episode_returns"][-1].mean()),
-            "charts/avg_episodic_length": float(infos["returned_episode_lengths"][-1].mean()),
-            "charts/learning_rate": learning_rate[-1].item(),
-            "losses/value_loss": v_loss[-1].item(),
-            "losses/policy_loss": pg_loss[-1].item(),
-            "losses/entropy": entropy_loss[-1].item(),
-            "losses/approx_kl": approx_kl[-1].item(),
-            "losses/loss": loss[-1].item(),
+            **{k: float(v[-1]) for k, v in update_metrics.items()},
             "charts/SPS": int(global_step / (time.perf_counter() - run_time)),
             "charts/SPS_update": int(steps_per_chunk / (time.perf_counter() - chunk_start)),
             "charts/time": time.perf_counter() - run_time,
